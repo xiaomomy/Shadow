@@ -23,12 +23,17 @@ Date: 2026
 """
 
 import numpy as np
+import torch
 from skimage.color import rgb2lab, rgb2gray
 from skimage.feature import local_binary_pattern
 from skimage.filters import sobel
 from scipy.ndimage import generic_filter
 from typing import Dict, List, Tuple, Optional
 import warnings
+
+# GPU Support
+USE_GPU = torch.cuda.is_available()
+DEVICE = torch.device('cuda' if USE_GPU else 'cpu')
 
 
 class FeatureExtractor:
@@ -585,30 +590,19 @@ class PaperCompliantFeatureExtractor:
     def extract_features_by_channel(
         self,
         image: np.ndarray,
-        region_labels: np.ndarray
+        region_labels: np.ndarray,
+        use_gpu: bool = True
     ) -> Dict[str, np.ndarray]:
         """
         Extract features organized by channel for paper's multi-kernel.
         
-        This returns features in the exact format expected by the paper's
-        kernel formulation (Equation 5):
-        
-        K(x,y) = Σ_{l∈{L,a,b,t}} w_l exp(-1/σ_l D_l(x,y))
-        
-        where:
-        - D_L, D_a, D_b: EMD distance for color histograms
-        - D_t: χ² distance for texton histogram
-        
         Args:
             image: RGB image (H, W, 3)
             region_labels: Region label map (H, W)
+            use_gpu: Whether to use GPU for calculation
             
         Returns:
-            Dictionary with keys 'L', 'a', 'b', 't':
-                - 'L': L* histogram (n_regions, 21)
-                - 'a': a* histogram (n_regions, 21)
-                - 'b': b* histogram (n_regions, 21)
-                - 't': Texton histogram (n_regions, 128) or LBP histogram
+            Dictionary with keys 'L', 'a', 'b', 't'
         """
         # Normalize image
         if image.max() > 1.0:
@@ -616,50 +610,45 @@ class PaperCompliantFeatureExtractor:
         
         n_regions = int(region_labels.max()) + 1
         
-        # Convert to LAB
+        # Convert to LAB (CPU is fast enough for this)
         lab_image = rgb2lab(image)
         
-        # Initialize color feature matrices
-        hist_L = np.zeros((n_regions, self.N_COLOR_BINS))
-        hist_a = np.zeros((n_regions, self.N_COLOR_BINS))
-        hist_b = np.zeros((n_regions, self.N_COLOR_BINS))
-        
-        # Extract color features for each region
-        for region_id in range(n_regions):
-            mask = region_labels == region_id
+        if use_gpu and USE_GPU:
+            color_hists = self._extract_color_histograms_gpu(lab_image, region_labels, n_regions)
+            hist_L, hist_a, hist_b = color_hists['L'], color_hists['a'], color_hists['b']
+        else:
+            # Initialize color feature matrices
+            hist_L = np.zeros((n_regions, self.N_COLOR_BINS))
+            hist_a = np.zeros((n_regions, self.N_COLOR_BINS))
+            hist_b = np.zeros((n_regions, self.N_COLOR_BINS))
             
-            if not mask.any():
-                continue
-            
-            # Extract LAB values
-            lab_values = lab_image[mask]  # (n_pixels, 3)
-            
-            # L* channel: range [0, 100]
-            L_values = lab_values[:, 0]
-            hist, _ = np.histogram(L_values, bins=self.N_COLOR_BINS, range=(0, 100))
-            hist_L[region_id] = hist / (hist.sum() + 1e-10)
-            
-            # a* channel: range approximately [-128, 127]
-            a_values = lab_values[:, 1]
-            hist, _ = np.histogram(a_values, bins=self.N_COLOR_BINS, range=(-128, 127))
-            hist_a[region_id] = hist / (hist.sum() + 1e-10)
-            
-            # b* channel: range approximately [-128, 127]
-            b_values = lab_values[:, 2]
-            hist, _ = np.histogram(b_values, bins=self.N_COLOR_BINS, range=(-128, 127))
-            hist_b[region_id] = hist / (hist.sum() + 1e-10)
+            # Extract color features for each region
+            for region_id in range(n_regions):
+                mask = region_labels == region_id
+                if not mask.any():
+                    continue
+                
+                lab_values = lab_image[mask]
+                
+                # L* channel: [0, 100]
+                hist, _ = np.histogram(lab_values[:, 0], bins=self.N_COLOR_BINS, range=(0, 100))
+                hist_L[region_id] = hist / (hist.sum() + 1e-10)
+                
+                # a* channel: [-128, 127]
+                hist, _ = np.histogram(lab_values[:, 1], bins=self.N_COLOR_BINS, range=(-128, 127))
+                hist_a[region_id] = hist / (hist.sum() + 1e-10)
+                
+                # b* channel: [-128, 127]
+                hist, _ = np.histogram(lab_values[:, 2], bins=self.N_COLOR_BINS, range=(-128, 127))
+                hist_b[region_id] = hist / (hist.sum() + 1e-10)
         
         # Extract texture features
         if self.use_texton:
-            # Use MR8 texton features (paper method)
             if not self.texton_extractor.texton_dict.is_built:
-                raise RuntimeError(
-                    "Texton dictionary not built. Call build_texton_dictionary() first, "
-                    "or set use_texton=False to use LBP as a simplified alternative."
-                )
-            hist_t = self.texton_extractor.extract_features(image, region_labels)
+                raise RuntimeError("Texton dictionary not built.")
+            hist_t = self.texton_extractor.extract_features(image, region_labels, use_gpu=use_gpu)
         else:
-            # Use LBP as simplified texture (for testing)
+            # ... (LBP implementation)
             gray_image = rgb2gray(image)
             n_texture_bins = self.lbp_n_points + 2
             lbp_image = local_binary_pattern(
@@ -684,7 +673,53 @@ class PaperCompliantFeatureExtractor:
             'b': hist_b,
             't': hist_t
         }
-    
+
+    def _extract_color_histograms_gpu(
+        self, 
+        lab_image: np.ndarray, 
+        region_labels: np.ndarray,
+        n_regions: int
+    ) -> Dict[str, np.ndarray]:
+        """Extract color histograms for all regions using GPU acceleration."""
+        H, W, _ = lab_image.shape
+        lab_tensor = torch.tensor(lab_image, dtype=torch.float32, device=DEVICE)
+        labels_tensor = torch.tensor(region_labels, dtype=torch.long, device=DEVICE)
+        
+        # Flatten
+        lab_flat = lab_tensor.view(-1, 3)
+        labels_flat = labels_tensor.view(-1)
+        
+        results = {}
+        ranges = {'L': (0, 100), 'a': (-128, 127), 'b': (-128, 127)}
+        
+        with torch.no_grad():
+            for i, (channel_name, (c_min, c_max)) in enumerate(ranges.items()):
+                channel_data = lab_flat[:, i]
+                
+                # Map values to bin indices [0, N_COLOR_BINS-1]
+                bin_indices = ((channel_data - c_min) / (c_max - c_min) * self.N_COLOR_BINS).long()
+                bin_indices = torch.clamp(bin_indices, 0, self.N_COLOR_BINS - 1)
+                
+                # Unique index for each (region, bin) pair
+                # pair_idx = region_id * N_COLOR_BINS + bin_idx
+                combined_indices = labels_flat * self.N_COLOR_BINS + bin_indices
+                
+                # Count occurrences using scatter_add
+                counts = torch.zeros(n_regions * self.N_COLOR_BINS, dtype=torch.float32, device=DEVICE)
+                ones = torch.ones_like(combined_indices, dtype=torch.float32)
+                counts.scatter_add_(0, combined_indices, ones)
+                
+                # Reshape to (n_regions, N_COLOR_BINS)
+                hist = counts.view(n_regions, self.N_COLOR_BINS)
+                
+                # Normalize
+                sums = torch.sum(hist, dim=1, keepdim=True)
+                hist = hist / (sums + 1e-10)
+                
+                results[channel_name] = hist.cpu().numpy().astype(np.float64)
+                
+        return results
+
     def get_feature_info(self) -> Dict:
         """Return feature dimensions."""
         if self.use_texton:

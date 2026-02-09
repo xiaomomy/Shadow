@@ -47,11 +47,17 @@ Date: 2026
 """
 
 import numpy as np
+import torch
+import torch.nn.functional as F
 from scipy.ndimage import convolve
 from scipy.cluster.vq import kmeans2, vq
 from skimage.color import rgb2gray
 from typing import Optional, Tuple, Dict, List
 import warnings
+
+# GPU Support
+USE_GPU = torch.cuda.is_available()
+DEVICE = torch.device('cuda' if USE_GPU else 'cpu')
 
 
 class MR8FilterBank:
@@ -107,7 +113,48 @@ class MR8FilterBank:
         # Precompute all filters
         self._filters = {}
         self._build_filters()
+        
+        # Prepare GPU filters if available
+        self._filters_torch = {}
+        if USE_GPU:
+            self._prepare_gpu_filters()
     
+    def _prepare_gpu_filters(self) -> None:
+        """Prepare filters as torch tensors for GPU acceleration."""
+        # Convert oriented filters to (N_orientations, 1, H, W) tensors
+        self._filters_torch['edge'] = {}
+        self._filters_torch['bar'] = {}
+        
+        for scale in self.scales:
+            # Edge filters
+            edge_list = self._edge_filters[scale]
+            max_h = max(f.shape[0] for f in edge_list)
+            max_w = max(f.shape[1] for f in edge_list)
+            
+            edge_tensor = torch.zeros((len(edge_list), 1, max_h, max_w), device=DEVICE, dtype=torch.float32)
+            for i, f in enumerate(edge_list):
+                h, w = f.shape
+                y_off, x_off = (max_h - h) // 2, (max_w - w) // 2
+                edge_tensor[i, 0, y_off:y_off+h, x_off:x_off+w] = torch.tensor(f, device=DEVICE, dtype=torch.float32)
+            self._filters_torch['edge'][scale] = edge_tensor
+            
+            # Bar filters
+            bar_list = self._bar_filters[scale]
+            bar_tensor = torch.zeros((len(bar_list), 1, max_h, max_w), device=DEVICE, dtype=torch.float32)
+            for i, f in enumerate(bar_list):
+                h, w = f.shape
+                y_off, x_off = (max_h - h) // 2, (max_w - w) // 2
+                bar_tensor[i, 0, y_off:y_off+h, x_off:x_off+w] = torch.tensor(f, device=DEVICE, dtype=torch.float32)
+            self._filters_torch['bar'][scale] = bar_tensor
+            
+        # Gaussian filter
+        g_f = self._gaussian_filter
+        self._filters_torch['gaussian'] = torch.tensor(g_f, device=DEVICE, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        
+        # LoG filter
+        log_f = self._log_filter
+        self._filters_torch['log'] = torch.tensor(log_f, device=DEVICE, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+
     def _build_filters(self) -> None:
         """Build all filters in the filter bank."""
         
@@ -259,12 +306,13 @@ class MR8FilterBank:
         
         return d2G
     
-    def apply(self, image: np.ndarray) -> np.ndarray:
+    def apply(self, image: np.ndarray, use_gpu: bool = True) -> np.ndarray:
         """
         Apply MR8 filter bank to an image.
         
         Args:
             image: Grayscale image (H, W) with values in [0, 1]
+            use_gpu: Whether to use GPU if available
             
         Returns:
             Filter responses: (H, W, 8) array
@@ -278,6 +326,10 @@ class MR8FilterBank:
         
         if image.max() > 1.0:
             image = image.astype(np.float64) / 255.0
+        
+        # Use GPU implementation if requested and available
+        if use_gpu and USE_GPU:
+            return self._apply_gpu(image)
         
         H, W = image.shape
         responses = np.zeros((H, W, 8), dtype=np.float64)
@@ -310,6 +362,42 @@ class MR8FilterBank:
         
         return responses
     
+    def _apply_gpu(self, image: np.ndarray) -> np.ndarray:
+        """Apply filters using GPU acceleration."""
+        H, W = image.shape
+        img_tensor = torch.tensor(image, dtype=torch.float32, device=DEVICE).unsqueeze(0).unsqueeze(0)
+        
+        responses = torch.zeros((H, W, 8), dtype=torch.float32, device=DEVICE)
+        
+        with torch.no_grad():
+            # Edge and Bar filters
+            for i, scale in enumerate(self.scales):
+                # Edge
+                edge_filters = self._filters_torch['edge'][scale]
+                pad_h, pad_w = edge_filters.shape[2] // 2, edge_filters.shape[3] // 2
+                edge_resp = F.conv2d(img_tensor, edge_filters, padding=(pad_h, pad_w))
+                responses[:, :, i] = torch.max(torch.abs(edge_resp), dim=1)[0].squeeze()
+                
+                # Bar
+                bar_filters = self._filters_torch['bar'][scale]
+                pad_h, pad_w = bar_filters.shape[2] // 2, bar_filters.shape[3] // 2
+                bar_resp = F.conv2d(img_tensor, bar_filters, padding=(pad_h, pad_w))
+                responses[:, :, 3 + i] = torch.max(torch.abs(bar_resp), dim=1)[0].squeeze()
+            
+            # Gaussian
+            g_filter = self._filters_torch['gaussian']
+            pad_h, pad_w = g_filter.shape[2] // 2, g_filter.shape[3] // 2
+            g_resp = F.conv2d(img_tensor, g_filter, padding=(pad_h, pad_w))
+            responses[:, :, 6] = g_resp.squeeze()
+            
+            # LoG
+            log_filter = self._filters_torch['log']
+            pad_h, pad_w = log_filter.shape[2] // 2, log_filter.shape[3] // 2
+            log_resp = F.conv2d(img_tensor, log_filter, padding=(pad_h, pad_w))
+            responses[:, :, 7] = torch.abs(log_resp).squeeze()
+            
+        return responses.cpu().numpy().astype(np.float64)
+
     def get_filter_info(self) -> Dict:
         """Return information about the filter bank."""
         return {
@@ -480,12 +568,13 @@ class TextonDictionary:
         
         return self
     
-    def assign_textons(self, responses: np.ndarray) -> np.ndarray:
+    def assign_textons(self, responses: np.ndarray, use_gpu: bool = True) -> np.ndarray:
         """
         Assign filter responses to nearest texton.
         
         Args:
             responses: Filter responses (N, 8) or (H, W, 8)
+            use_gpu: Whether to use GPU if available
             
         Returns:
             Texton assignments (N,) or (H, W)
@@ -495,6 +584,10 @@ class TextonDictionary:
         
         original_shape = responses.shape[:-1]
         responses_flat = responses.reshape(-1, 8)
+        
+        # Use GPU implementation if requested and available
+        if use_gpu and USE_GPU:
+            return self._assign_textons_gpu(responses_flat, original_shape)
         
         # Normalize
         norms = np.linalg.norm(responses_flat, axis=1, keepdims=True)
@@ -506,6 +599,40 @@ class TextonDictionary:
         
         return assignments.reshape(original_shape)
     
+    def _assign_textons_gpu(self, responses_flat: np.ndarray, original_shape: Tuple) -> np.ndarray:
+        """Assign textons using GPU acceleration."""
+        resp_tensor = torch.tensor(responses_flat, dtype=torch.float32, device=DEVICE)
+        centers_tensor = torch.tensor(self.centers_, dtype=torch.float32, device=DEVICE)
+        
+        # Normalize responses (to match CPU build process)
+        r_norms = torch.norm(resp_tensor, dim=1, keepdim=True)
+        resp_norm = resp_tensor / torch.where(r_norms > 0, r_norms, torch.ones_like(r_norms))
+        
+        # Precompute centers squared norm for Euclidean distance
+        # |x - y|^2 = |x|^2 + |y|^2 - 2<x, y>
+        centers_sq_norm = torch.sum(centers_tensor**2, dim=1) # (128,)
+        
+        batch_size = 100000
+        assignments = torch.zeros(len(responses_flat), dtype=torch.long, device=DEVICE)
+        
+        with torch.no_grad():
+            for i in range(0, len(responses_flat), batch_size):
+                end = min(i + batch_size, len(responses_flat))
+                batch_resp = resp_norm[i:end]
+                
+                # |x|^2
+                resp_sq_norm = torch.sum(batch_resp**2, dim=1, keepdim=True) # (batch, 1)
+                
+                # -2<x, y>
+                dot_products = torch.matmul(batch_resp, centers_tensor.t()) # (batch, 128)
+                
+                # |x - y|^2
+                dists_sq = resp_sq_norm + centers_sq_norm - 2 * dot_products
+                
+                assignments[i:end] = torch.argmin(dists_sq, dim=1)
+                
+        return assignments.cpu().numpy().reshape(original_shape)
+
     def compute_histogram(
         self,
         image: np.ndarray,
@@ -677,7 +804,8 @@ class TextonFeatureExtractor:
         self,
         image: np.ndarray,
         region_labels: np.ndarray,
-        cache_responses: bool = True
+        cache_responses: bool = True,
+        use_gpu: bool = True
     ) -> np.ndarray:
         """
         Extract texton histogram features for all regions.
@@ -686,6 +814,7 @@ class TextonFeatureExtractor:
             image: Input image (H, W) or (H, W, 3)
             region_labels: Region label map (H, W)
             cache_responses: Whether to cache filter responses
+            use_gpu: Whether to use GPU for calculation
             
         Returns:
             Feature matrix (n_regions, n_textons)
@@ -702,10 +831,13 @@ class TextonFeatureExtractor:
         if cache_responses and self._cached_image_id == image_id:
             responses = self._cached_responses
         else:
-            responses = self.filter_bank.apply(image)
+            responses = self.filter_bank.apply(image, use_gpu=use_gpu)
             if cache_responses:
                 self._cached_responses = responses
                 self._cached_image_id = image_id
+        
+        # Assign textons for the whole image (more efficient on GPU)
+        assignments = self.texton_dict.assign_textons(responses, use_gpu=use_gpu)
         
         # Compute histogram for each region
         for region_id in range(n_regions):
@@ -714,8 +846,19 @@ class TextonFeatureExtractor:
             if not mask.any():
                 continue
             
-            hist = self.texton_dict.compute_histogram_from_responses(responses, mask)
-            features[region_id] = hist
+            # Select region textons from pre-assigned map
+            region_textons = assignments[mask]
+            
+            # Compute histogram
+            hist, _ = np.histogram(
+                region_textons,
+                bins=self.n_textons,
+                range=(0, self.n_textons)
+            )
+            
+            # Normalize
+            hist = hist.astype(np.float64)
+            features[region_id] = hist / (hist.sum() + 1e-10)
         
         return features
     

@@ -158,7 +158,7 @@ def extract_image_features(
     n_regions = int(region_labels.max()) + 1
     
     # 3. Extract all region features
-    all_features = feat_extractor.extract_features_by_channel(image, region_labels)
+    all_features = feat_extractor.extract_features_by_channel(image, region_labels, use_gpu=USE_GPU)
     
     # 4. Filter small regions and get labels
     valid_indices = []
