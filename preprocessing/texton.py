@@ -467,10 +467,6 @@ class TextonDictionary:
             
         Returns:
             self: The fitted dictionary
-            
-        Reference:
-            Paper: "We run the full MR8 filter set in the whole dataset and 
-            cluster the filter responses into 128 textons using k-means."
         """
         if verbose:
             print(f"[TextonDict] Building texton dictionary with {self.n_textons} textons...")
@@ -486,7 +482,6 @@ class TextonDictionary:
             responses = self.filter_bank.apply(image)  # (H, W, 8)
             
             # Reshape to (N_pixels, 8)
-            H, W, _ = responses.shape
             responses_flat = responses.reshape(-1, 8)
             
             # Sample a fraction of pixels (for efficiency)
@@ -498,34 +493,9 @@ class TextonDictionary:
                 all_responses.append(responses_flat[indices])
         
         # Concatenate all responses
-        all_responses = np.vstack(all_responses)
+        all_responses = np.vstack(all_responses).astype(np.float32)
         
-        if verbose:
-            print(f"  Total samples for k-means: {len(all_responses)}")
-        
-        # Normalize responses (L2 normalization per sample)
-        norms = np.linalg.norm(all_responses, axis=1, keepdims=True)
-        norms = np.where(norms > 0, norms, 1.0)
-        all_responses = all_responses / norms
-        
-        # Run k-means clustering
-        if verbose:
-            print(f"  Running k-means with {self.n_textons} clusters...")
-        
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            self.centers_, _ = kmeans2(
-                all_responses.astype(np.float32),
-                self.n_textons,
-                iter=20,
-                minit='points'
-            )
-        
-        self._is_built = True
-        
-        if verbose:
-            print(f"  Texton dictionary built successfully!")
-        
+        self.build_from_responses(all_responses, verbose=verbose)
         return self
     
     def build_from_responses(
@@ -546,6 +516,16 @@ class TextonDictionary:
         if verbose:
             print(f"[TextonDict] Building from {len(responses)} precomputed responses...")
         
+        if USE_GPU:
+            try:
+                self.centers_ = self._kmeans_gpu(responses, self.n_textons, verbose=verbose)
+                self._is_built = True
+                return self
+            except Exception as e:
+                warnings.warn(f"GPU K-Means failed: {e}. Falling back to CPU.")
+                torch.cuda.empty_cache()
+
+        # CPU Fallback
         # Normalize responses
         norms = np.linalg.norm(responses, axis=1, keepdims=True)
         norms = np.where(norms > 0, norms, 1.0)
@@ -567,6 +547,51 @@ class TextonDictionary:
             print(f"  Dictionary built successfully!")
         
         return self
+
+    def _kmeans_gpu(self, data: np.ndarray, k: int, max_iter: int = 20, verbose: bool = True) -> np.ndarray:
+        """K-Means implementation using PyTorch for GPU acceleration."""
+        X = torch.tensor(data, dtype=torch.float32, device=DEVICE)
+        
+        # Normalize data (L2)
+        norms = torch.norm(X, dim=1, keepdim=True)
+        X = X / torch.where(norms > 0, norms, torch.ones_like(norms))
+        
+        # Random initialization
+        n_samples = X.shape[0]
+        indices = torch.randperm(n_samples, device=DEVICE)[:k]
+        centers = X[indices].clone()
+        
+        if verbose:
+            print(f"  [GPU] Running K-Means (k={k}, samples={n_samples})...")
+            
+        for i in range(max_iter):
+            # Compute distances to centers: |x-c|^2 = |x|^2 + |c|^2 - 2xc
+            # Since |x|=1 and |c| is close to 1, we can minimize -2xc or maximize xc
+            # For robustness, we use the standard formula
+            dist = torch.cdist(X, centers) # (N, k)
+            labels = torch.argmin(dist, dim=1)
+            
+            # Update centers
+            new_centers = torch.zeros_like(centers)
+            counts = torch.zeros(k, 1, device=DEVICE)
+            
+            # Vectorized center update
+            ones = torch.ones(n_samples, 1, device=DEVICE)
+            new_centers.index_add_(0, labels, X)
+            counts.index_add_(0, labels, ones)
+            
+            # Avoid division by zero
+            new_centers = new_centers / torch.where(counts > 0, counts, torch.ones_like(counts))
+            
+            # Check convergence (optional, here we just run max_iter)
+            center_shift = torch.norm(new_centers - centers)
+            centers = new_centers
+            
+            if center_shift < 1e-5:
+                break
+                
+        torch.cuda.empty_cache()
+        return centers.cpu().numpy()
     
     def assign_textons(self, responses: np.ndarray, use_gpu: bool = True) -> np.ndarray:
         """
