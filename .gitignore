@@ -4,8 +4,14 @@ __pycache__/
 *$py.class
 
 # Data and large files
-data/
-output/
+data/**/*
+!data/**/*.py
+!data/**/__init__.py
+!data/**/.gitkeep
+*.tar
+*.zip
+*.7z
+*.rar
 
 # IDE files
 .vscode/
@@ -15,4 +21,5 @@ output/
 # OS files
 .DS_Store
 Thumbs.db
+
 
