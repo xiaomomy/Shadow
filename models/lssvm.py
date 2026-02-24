@@ -71,11 +71,16 @@ Date: 2026
 """
 
 import numpy as np
+import torch
 from typing import Optional, Dict, Tuple, Union, List
 from scipy import linalg
 import warnings
 
 from .kernels import BaseKernel, RBFKernel, MultiKernel
+
+# GPU Support
+USE_GPU = torch.cuda.is_available()
+DEVICE = torch.device('cuda' if USE_GPU else 'cpu')
 
 
 class LSSVM:
@@ -92,12 +97,14 @@ class LSSVM:
         bias: Bias term
         X_train: Training samples
         y_train: Training labels
+        use_gpu: Whether to use GPU acceleration
     """
     
     def __init__(
         self,
         kernel: Optional[BaseKernel] = None,
-        gamma: float = 1.0
+        gamma: float = 1.0,
+        use_gpu: bool = True
     ):
         """
         Initialize LSSVM classifier.
@@ -106,6 +113,7 @@ class LSSVM:
             kernel: Kernel function (default: RBF kernel)
             gamma: Regularization parameter. Larger γ means less regularization
                    (fitting training data more closely). Must be > 0.
+            use_gpu: Whether to use GPU acceleration if available.
                    
         Note:
             The regularization term in LSSVM is (γ/2) Σ e_i², so larger γ
@@ -113,6 +121,7 @@ class LSSVM:
         """
         self.kernel = kernel if kernel is not None else RBFKernel()
         self.gamma = gamma
+        self.use_gpu = use_gpu and USE_GPU
         
         # Model parameters (set after training)
         self.alpha_ = None      # Support values α' = y ⊙ α
@@ -172,11 +181,6 @@ class LSSVM:
         # Build the augmented system matrix M
         # M = [0    1^T       ]
         #     [1  K + γ^{-1}I]
-        #
-        # Paper formulation: the regularization term γ^{-1} corresponds to
-        # the inverse of the regularization parameter
-        
-        self._M = self._build_system_matrix(self._K, n_samples)
         
         # Build right-hand side vector
         # [0]
@@ -185,13 +189,38 @@ class LSSVM:
         rhs[1:] = self.y_train_
         
         # Solve the linear system M @ [b, α']^T = [0, y]^T
-        # Using Cholesky or LU decomposition for numerical stability
+        if self.use_gpu:
+            try:
+                # Build M and rhs on GPU
+                M_gpu = self._build_system_matrix(self._K, n_samples, to_torch=True)
+                rhs_gpu = torch.tensor(rhs, dtype=torch.float32, device=DEVICE)
+                
+                # Solve using torch.linalg.solve (GPU)
+                solution_gpu = torch.linalg.solve(M_gpu, rhs_gpu)
+                solution = solution_gpu.cpu().numpy()
+                
+                # Store M and compute M_inv on GPU
+                self._M = M_gpu.cpu().numpy()
+                self._M_inv = torch.linalg.inv(M_gpu).cpu().numpy()
+                
+                # Extract bias and support values
+                self.bias_ = float(solution[0])
+                self.alpha_ = solution[1:]
+                
+                self._is_fitted = True
+                torch.cuda.empty_cache()
+                return self
+            except Exception as e:
+                warnings.warn(f"GPU fit failed: {e}. Falling back to CPU.")
+                # Clear GPU cache and proceed with CPU
+                torch.cuda.empty_cache()
+        
+        # CPU Fallback
+        self._M = self._build_system_matrix(self._K, n_samples, to_torch=False)
         try:
-            # Try Cholesky (faster, but requires positive definiteness)
-            # Note: M is not necessarily positive definite, so we use LU
+            # Solve using scipy.linalg.solve
             solution = linalg.solve(self._M, rhs, assume_a='gen')
         except linalg.LinAlgError:
-            # Fall back to least squares if system is singular
             warnings.warn("System matrix is singular, using least squares solution")
             solution, _, _, _ = linalg.lstsq(self._M, rhs)
         
@@ -200,13 +229,17 @@ class LSSVM:
         self.alpha_ = solution[1:]
         
         # Compute and cache M^{-1} for LOO calculations
-        # This is the key for efficient LOO error computation
         self._compute_M_inverse()
         
         self._is_fitted = True
         return self
     
-    def _build_system_matrix(self, K: np.ndarray, n_samples: int) -> np.ndarray:
+    def _build_system_matrix(
+        self, 
+        K: np.ndarray, 
+        n_samples: int, 
+        to_torch: bool = False
+    ) -> Union[np.ndarray, torch.Tensor]:
         """
         Build the augmented system matrix M.
         
@@ -216,49 +249,49 @@ class LSSVM:
         Args:
             K: Kernel matrix (n_samples, n_samples)
             n_samples: Number of training samples
+            to_torch: Whether to return a torch.Tensor on the current device
             
         Returns:
-            M: Augmented system matrix (n_samples+1, n_samples+1)
+            M: Augmented system matrix
         """
-        M = np.zeros((n_samples + 1, n_samples + 1))
-        
-        # First row: [0, 1, 1, ..., 1]
-        M[0, 1:] = 1.0
-        
-        # First column: [0, 1, 1, ..., 1]^T
-        M[1:, 0] = 1.0
-        
-        # Bottom-right block: K + γ^{-1}I
-        # Note: γ^{-1} = 1/γ is the regularization factor
-        regularization = 1.0 / self.gamma
-        M[1:, 1:] = K + regularization * np.eye(n_samples)
+        if to_torch:
+            K_torch = torch.tensor(K, dtype=torch.float32, device=DEVICE)
+            M = torch.zeros((n_samples + 1, n_samples + 1), dtype=torch.float32, device=DEVICE)
+            M[0, 1:] = 1.0
+            M[1:, 0] = 1.0
+            reg = 1.0 / self.gamma
+            M[1:, 1:] = K_torch + reg * torch.eye(n_samples, device=DEVICE)
+        else:
+            M = np.zeros((n_samples + 1, n_samples + 1))
+            M[0, 1:] = 1.0
+            M[1:, 0] = 1.0
+            reg = 1.0 / self.gamma
+            M[1:, 1:] = K + reg * np.eye(n_samples)
         
         return M
     
     def _compute_M_inverse(self) -> None:
         """
         Compute and cache the inverse of system matrix M.
-        
-        M^{-1} is needed for efficient LOO computation.
-        The diagonal elements (M^{-1})_{i+1,i+1} are used in the LOO formula.
         """
+        if self.use_gpu:
+            try:
+                M_torch = torch.tensor(self._M, dtype=torch.float32, device=DEVICE)
+                self._M_inv = torch.linalg.inv(M_torch).cpu().numpy()
+                return
+            except Exception as e:
+                warnings.warn(f"GPU inverse failed: {e}. Falling back to CPU.")
+        
+        # CPU Fallback
         try:
             self._M_inv = linalg.inv(self._M)
         except linalg.LinAlgError:
-            # Use pseudo-inverse if M is singular
             warnings.warn("Using pseudo-inverse due to singular matrix")
             self._M_inv = linalg.pinv(self._M)
     
     def predict(self, X: np.ndarray, K: Optional[np.ndarray] = None) -> np.ndarray:
         """
         Predict class labels for samples.
-        
-        Args:
-            X: Test samples, shape (n_samples, n_features)
-            K: Precomputed kernel matrix K(X, X_train) (optional)
-            
-        Returns:
-            Predicted labels, shape (n_samples,), values in {-1, +1}
         """
         scores = self.decision_function(X, K)
         return np.sign(scores)
@@ -270,33 +303,27 @@ class LSSVM:
     ) -> np.ndarray:
         """
         Compute decision function values for samples.
-        
-        f(x) = Σ_{i=1}^{N} α'_i K(x_i, x) + b
-        
-        Args:
-            X: Test samples, shape (n_samples, n_features)
-            K: Precomputed kernel matrix K(X_train, X) (optional)
-               Shape should be (n_train, n_test)
-               
-        Returns:
-            Decision function values, shape (n_samples,)
         """
         if not self._is_fitted:
             raise RuntimeError("Model must be fitted before prediction")
         
-        # Compute kernel between training and test samples
         if K is not None:
-            # K is provided as K(X_train, X) with shape (n_train, n_test)
             K_test = K
         else:
-            # Compute K(X_train, X)
             K_test = self.kernel.compute(self.X_train_, X)
         
-        # Decision function: f(x) = Σ α'_i K(x_i, x) + b
-        # This is α'^T @ K + b
-        scores = np.dot(self.alpha_, K_test) + self.bias_
+        if self.use_gpu:
+            try:
+                alpha_torch = torch.tensor(self.alpha_, dtype=torch.float32, device=DEVICE)
+                K_test_torch = torch.tensor(K_test, dtype=torch.float32, device=DEVICE)
+                # alpha'^T @ K_test + bias
+                scores_torch = torch.matmul(alpha_torch, K_test_torch) + self.bias_
+                return scores_torch.cpu().numpy()
+            except Exception as e:
+                warnings.warn(f"GPU decision_function failed: {e}. Falling back to CPU.")
         
-        return scores
+        # CPU Fallback
+        return np.dot(self.alpha_, K_test) + self.bias_
     
     def predict_proba(
         self,
@@ -305,57 +332,15 @@ class LSSVM:
     ) -> np.ndarray:
         """
         Predict class probabilities using sigmoid transformation.
-        
-        P(y=1|x) = 1 / (1 + exp(-f(x)))
-        
-        Args:
-            X: Test samples
-            K: Precomputed kernel matrix (optional)
-            
-        Returns:
-            Probability estimates, shape (n_samples, 2)
-            Column 0: P(y=-1), Column 1: P(y=+1)
         """
         scores = self.decision_function(X, K)
-        
-        # Sigmoid transformation
         prob_positive = 1.0 / (1.0 + np.exp(-scores))
         prob_negative = 1.0 - prob_positive
-        
         return np.column_stack([prob_negative, prob_positive])
-    
-    # =========================================================================
-    # Leave-One-Out (LOO) Methods - Key for Kernel Optimization
-    # =========================================================================
     
     def compute_loo_residuals(self) -> np.ndarray:
         """
         Compute Leave-One-Out residuals efficiently.
-        
-        This is the KEY method that enables efficient kernel optimization.
-        For LSSVM, the LOO residual can be computed in closed form:
-        
-            e_i^{LOO} = α'_i / (M^{-1})_{i+1,i+1}
-        
-        where:
-            - α'_i is the i-th support value
-            - (M^{-1})_{i+1,i+1} is the (i+1,i+1) diagonal element of M^{-1}
-              (offset by 1 due to bias term in first position)
-        
-        Reference:
-            This formula comes from the Sherman-Morrison-Woodbury formula
-            applied to the LSSVM linear system.
-            
-            Paper (Section 3): "Optimizing the leave-one-out cross validation
-            error is typically difficult, but it can be done efficiently in
-            our framework."
-        
-        Returns:
-            LOO residuals, shape (n_samples,)
-            
-        Note:
-            The LOO residual represents the prediction error when sample i
-            is predicted using a model trained on all samples except i.
         """
         if not self._is_fitted:
             raise RuntimeError("Model must be fitted before computing LOO residuals")
@@ -363,21 +348,35 @@ class LSSVM:
         if self._M_inv is None:
             self._compute_M_inverse()
         
-        # Extract diagonal elements of M^{-1} for samples (indices 1 to n)
-        # Note: index 0 corresponds to bias term
-        diag_elements = np.diag(self._M_inv)[1:]  # Shape: (n_samples,)
+        if self.use_gpu:
+            try:
+                M_inv_torch = torch.tensor(self._M_inv, dtype=torch.float32, device=DEVICE)
+                alpha_torch = torch.tensor(self.alpha_, dtype=torch.float32, device=DEVICE)
+                
+                # Extract diagonal elements [1:]
+                diag_elements = torch.diagonal(M_inv_torch)[1:]
+                
+                # Avoid division by zero
+                eps = 1e-10
+                diag_elements = torch.where(
+                    torch.abs(diag_elements) < eps,
+                    eps * torch.sign(diag_elements + 1e-15),
+                    diag_elements
+                )
+                
+                loo_residuals = alpha_torch / diag_elements
+                return loo_residuals.cpu().numpy()
+            except Exception as e:
+                warnings.warn(f"GPU compute_loo_residuals failed: {e}. Falling back to CPU.")
         
-        # LOO residual formula: e_i^{LOO} = α'_i / (M^{-1})_{i+1,i+1}
-        # Avoid division by zero
+        # CPU Fallback
+        diag_elements = np.diag(self._M_inv)[1:]
         diag_elements = np.where(
             np.abs(diag_elements) < 1e-10,
             1e-10 * np.sign(diag_elements + 1e-15),
             diag_elements
         )
-        
-        loo_residuals = self.alpha_ / diag_elements
-        
-        return loo_residuals
+        return self.alpha_ / diag_elements
     
     def compute_loo_predictions(self) -> np.ndarray:
         """
@@ -602,7 +601,8 @@ class LSSVM:
 def fit_lssvm_with_precomputed_kernel(
     K: np.ndarray,
     y: np.ndarray,
-    gamma: float = 1.0
+    gamma: float = 1.0,
+    use_gpu: bool = True
 ) -> Tuple[np.ndarray, float, np.ndarray]:
     """
     Fit LSSVM using precomputed kernel matrix.
@@ -614,6 +614,7 @@ def fit_lssvm_with_precomputed_kernel(
         K: Precomputed kernel matrix (n_samples, n_samples)
         y: Labels (n_samples,), values in {-1, +1}
         gamma: Regularization parameter
+        use_gpu: Whether to use GPU acceleration
         
     Returns:
         alpha: Support values
@@ -621,18 +622,46 @@ def fit_lssvm_with_precomputed_kernel(
         M_inv: Inverse of system matrix (for LOO computation)
     """
     n_samples = K.shape[0]
+    reg = 1.0 / gamma
     
-    # Build system matrix
+    if use_gpu and USE_GPU:
+        try:
+            K_torch = torch.tensor(K, dtype=torch.float32, device=DEVICE)
+            y_torch = torch.tensor(y, dtype=torch.float32, device=DEVICE)
+            
+            # Build system matrix M
+            M = torch.zeros((n_samples + 1, n_samples + 1), dtype=torch.float32, device=DEVICE)
+            M[0, 1:] = 1.0
+            M[1:, 0] = 1.0
+            M[1:, 1:] = K_torch + reg * torch.eye(n_samples, device=DEVICE)
+            
+            # Build RHS
+            rhs = torch.zeros(n_samples + 1, dtype=torch.float32, device=DEVICE)
+            rhs[1:] = y_torch
+            
+            # Solve
+            solution = torch.linalg.solve(M, rhs)
+            M_inv = torch.linalg.inv(M)
+            
+            alpha = solution[1:].cpu().numpy()
+            bias = float(solution[0].cpu().numpy())
+            M_inv_np = M_inv.cpu().numpy()
+            
+            torch.cuda.empty_cache()
+            return alpha, bias, M_inv_np
+        except Exception as e:
+            warnings.warn(f"GPU fit_lssvm_with_precomputed_kernel failed: {e}. Falling back to CPU.")
+            torch.cuda.empty_cache()
+
+    # CPU Fallback
     M = np.zeros((n_samples + 1, n_samples + 1))
     M[0, 1:] = 1.0
     M[1:, 0] = 1.0
-    M[1:, 1:] = K + (1.0 / gamma) * np.eye(n_samples)
+    M[1:, 1:] = K + reg * np.eye(n_samples)
     
-    # Build RHS
     rhs = np.zeros(n_samples + 1)
     rhs[1:] = y
     
-    # Solve
     try:
         solution = linalg.solve(M, rhs, assume_a='gen')
         M_inv = linalg.inv(M)
@@ -650,7 +679,8 @@ def compute_loo_error_from_solution(
     alpha: np.ndarray,
     y: np.ndarray,
     M_inv: np.ndarray,
-    error_type: str = 'classification'
+    error_type: str = 'classification',
+    use_gpu: bool = True
 ) -> float:
     """
     Compute LOO error from LSSVM solution.
@@ -662,20 +692,45 @@ def compute_loo_error_from_solution(
         y: Training labels
         M_inv: Inverse of system matrix
         error_type: 'classification' or 'mse'
+        use_gpu: Whether to use GPU acceleration
         
     Returns:
         LOO error value
     """
-    # Extract diagonal of M^{-1} for samples
+    if use_gpu and USE_GPU:
+        try:
+            alpha_torch = torch.tensor(alpha, dtype=torch.float32, device=DEVICE)
+            y_torch = torch.tensor(y, dtype=torch.float32, device=DEVICE)
+            M_inv_torch = torch.tensor(M_inv, dtype=torch.float32, device=DEVICE)
+            
+            h_diag = torch.diagonal(M_inv_torch)[1:]
+            eps = 1e-10
+            h_diag = torch.where(torch.abs(h_diag) < eps, eps, h_diag)
+            
+            loo_residuals = alpha_torch / h_diag
+            loo_predictions = y_torch - loo_residuals
+            
+            if error_type == 'classification':
+                preds = torch.sign(loo_predictions)
+                preds = torch.where(preds == 0, torch.ones_like(preds), preds)
+                error = torch.mean((preds != y_torch).float())
+            elif error_type == 'mse':
+                error = torch.mean(loo_residuals ** 2)
+            else:
+                raise ValueError(f"Unknown error type: {error_type}")
+            
+            result = float(error.cpu().numpy())
+            torch.cuda.empty_cache()
+            return result
+        except Exception as e:
+            warnings.warn(f"GPU compute_loo_error_from_solution failed: {e}. Falling back to CPU.")
+            torch.cuda.empty_cache()
+
+    # CPU Fallback
     h_diag = np.diag(M_inv)[1:]
-    
-    # Avoid division by zero
     h_diag = np.where(np.abs(h_diag) < 1e-10, 1e-10, h_diag)
     
-    # LOO residuals
     loo_residuals = alpha / h_diag
-    
-    # LOO predictions
     loo_predictions = y - loo_residuals
     
     if error_type == 'classification':

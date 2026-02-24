@@ -379,7 +379,7 @@ class MultiKernelLSSVM:
         # Train LSSVM (using precomputed kernel)
         print("  Fitting LSSVM...")
         dummy_X = np.zeros((n_samples, 1))
-        self.lssvm = LSSVM(gamma=self.gamma)
+        self.lssvm = LSSVM(gamma=self.gamma, use_gpu=USE_GPU)
         self.lssvm.fit(dummy_X, y, K=self._train_K)
         
         # Platt scaling
