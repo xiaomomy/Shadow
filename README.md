@@ -70,9 +70,19 @@ $$\begin{bmatrix} 0 & \mathbf{1}^T \\ \mathbf{1} & \mathbf{K} + \gamma^{-1}\math
 The **Leave-One-Out residual** for sample $i$ is computed efficiently as:
 $$e_i^{LOO} = \frac{\alpha_i}{(\mathbf{M}^{-1})_{i+1, i+1}}$$
 
-## 👥 Authors
+## 📜 Citation
 
-- **Shadow Detection Project Team** (HKU MSc CIML)
+If you find this work useful for your research, please cite the original paper:
+
+```bibtex
+@inproceedings{vicente2015leave,
+  title={Leave-one-out kernel optimization for shadow detection},
+  author={Vicente, Tom{\'a}s F Yery and Hou, Le and Samaras, Dimitris and Hoai, Minh and Nguyen, Minh-Hoai},
+  booktitle={Proceedings of the IEEE International Conference on Computer Vision (ICCV)},
+  pages={3388--3396},
+  year={2015}
+}
+```
 
 ---
-*This project is for educational purposes as part of a course project.*
+*This project is for educational purposes as part of a course project at HKU (MSc CIML).*
