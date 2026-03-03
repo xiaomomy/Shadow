@@ -28,7 +28,8 @@ This repository implements a shadow detection system based on the paper **"Leave
 │   ├── features.py         # LAB color and texture feature extraction
 │   └── texton.py           # MR8 filter bank and GPU K-Means dictionary
 ├── output/                 # Training results and visualizations
-├── train_quick.py          # Entry point for training and validation
+├── train_quick.py          # Entry point for quick validation
+├── train_sbu.py            # Entry point for formal SBU training (Full Paper Reproduction)
 └── requirements.txt        # Project dependencies
 ```
 
@@ -46,20 +47,26 @@ This repository implements a shadow detection system based on the paper **"Leave
    pip install -r requirements.txt
    ```
 
-## 🏃 Quick Start
+## 🏃 Getting Started
 
-To start the training pipeline (which includes automatic data preparation, feature extraction, and model optimization):
-
+### 1. Quick Validation
+To start the quick training pipeline (using fewer images for rapid validation):
 ```bash
 python train_quick.py
 ```
 
-### What happens during execution?
-1. **Data**: The script checks for the SBU dataset. If not found, it downloads it from the official Stony Brook source.
-2. **Features**: It builds a Texton dictionary (GPU-accelerated) and extracts regional LAB/Texture features.
-3. **Training**: It solves the LSSVM linear system on the GPU to find optimal support values.
-4. **Optimization**: It uses the closed-form LOO formula to find the best `sigma_multiplier` for the kernels.
-5. **Output**: Results (BER, Accuracy) and the trained model are saved in the `output/` directory.
+### 2. Formal SBU Training (Full Reproduction)
+To reproduce the results of the ICCV 2015 paper on the full SBU dataset:
+```bash
+python train_sbu.py
+```
+
+### What happens during formal training?
+1. **Full Dataset**: The script uses the entire SBU-Shadow dataset (approx. 4,000 training and 638 test images).
+2. **Joint Optimization (Phase 3)**: It uses the `PaperBeamSearchOptimizer` to perform a 9-dimensional grid search (4 weights, 4 sigmas, 1 gamma) for 500 iterations.
+3. **LOO Objective**: It minimizes the Leave-One-Out Balanced Error Rate (BER) using the closed-form residual formula.
+4. **Caching**: Feature extraction and Texton dictionary building are cached for performance.
+5. **Output**: The best model and detailed results are saved in `output/sbu_formal/`.
 
 ## 🧪 Mathematical Foundation
 
