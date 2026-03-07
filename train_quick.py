@@ -106,6 +106,60 @@ def get_region_label(mask: np.ndarray, region_mask: np.ndarray) -> int:
     return 1 if shadow_ratio > 0.5 else 0
 
 
+def compute_pixel_metrics_from_regions(
+    region_preds: np.ndarray,
+    region_pixel_stats: np.ndarray
+) -> Dict[str, float]:
+    """
+    Compute pixel-level metrics from region predictions.
+
+    For each region, all pixels are assigned the same predicted label and then
+    compared against ground-truth pixel statistics from that region.
+    """
+    region_preds = np.asarray(region_preds, dtype=np.int32).ravel()
+    region_pixel_stats = np.asarray(region_pixel_stats, dtype=np.int64)
+
+    if region_pixel_stats.ndim != 2 or region_pixel_stats.shape[1] != 2:
+        raise ValueError(
+            "region_pixel_stats must have shape (n_regions, 2) "
+            "with columns [n_pixels, n_shadow_pixels]."
+        )
+    if len(region_preds) != len(region_pixel_stats):
+        raise ValueError(
+            "region_preds and region_pixel_stats must have the same length."
+        )
+
+    n_pixels = region_pixel_stats[:, 0].astype(np.float64)
+    n_shadow_pixels = region_pixel_stats[:, 1].astype(np.float64)
+    n_non_shadow_pixels = n_pixels - n_shadow_pixels
+    pred_shadow = (region_preds == 1)
+
+    tp = np.sum(n_shadow_pixels[pred_shadow])
+    fp = np.sum(n_non_shadow_pixels[pred_shadow])
+    fn = np.sum(n_shadow_pixels[~pred_shadow])
+    tn = np.sum(n_non_shadow_pixels[~pred_shadow])
+
+    total = tp + fp + fn + tn
+    accuracy = (tp + tn) / total if total > 0 else 0.0
+
+    fpr_den = fp + tn
+    fnr_den = fn + tp
+    fpr = fp / fpr_den if fpr_den > 0 else 0.0
+    fnr = fn / fnr_den if fnr_den > 0 else 0.0
+    ber = 0.5 * (fpr + fnr)
+
+    return {
+        'ber': float(ber),
+        'accuracy': float(accuracy),
+        'fpr': float(fpr),
+        'fnr': float(fnr),
+        'tp': float(tp),
+        'fp': float(fp),
+        'tn': float(tn),
+        'fn': float(fn),
+    }
+
+
 class Timer:
     """Timer class for benchmarking"""
     def __init__(self):
@@ -142,13 +196,14 @@ def extract_image_features(
     slic: SuperpixelSegmenter,
     region_gen: MeanShiftRegionGenerator,
     feat_extractor: PaperCompliantFeatureExtractor
-) -> Tuple[Dict[str, np.ndarray], List[int]]:
+) -> Tuple[Dict[str, np.ndarray], List[int], List[List[int]]]:
     """
     Extract all region features from a single image
     
     Returns:
         features_dict: {'L': (n, 21), 'a': (n, 21), 'b': (n, 21), 'texture': (n, n_textons)}
         labels: Region label list
+        region_pixel_stats: List of [n_pixels, n_shadow_pixels] for valid regions
     """
     # 1. Superpixel segmentation
     superpixel_labels = slic.segment(image)
@@ -163,6 +218,7 @@ def extract_image_features(
     # 4. Filter small regions and get labels
     valid_indices = []
     labels = []
+    region_pixel_stats = []
     
     for region_id in range(n_regions):
         region_mask = (region_labels == region_id)
@@ -170,6 +226,9 @@ def extract_image_features(
             continue
         valid_indices.append(region_id)
         labels.append(get_region_label(mask, region_mask))
+        n_region_pixels = int(np.sum(region_mask))
+        n_shadow_pixels = int(np.sum(mask[region_mask] > 0)) if mask is not None else 0
+        region_pixel_stats.append([n_region_pixels, n_shadow_pixels])
     
     # 5. Keep only features of valid regions
     features_dict = {
@@ -179,7 +238,7 @@ def extract_image_features(
         'texture': all_features['t'][valid_indices]
     }
     
-    return features_dict, labels
+    return features_dict, labels, region_pixel_stats
 
 
 def extract_dataset_features(
@@ -189,10 +248,11 @@ def extract_dataset_features(
     region_gen: MeanShiftRegionGenerator,
     feat_extractor: PaperCompliantFeatureExtractor,
     desc: str = "Extracting"
-) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
+) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray]:
     """Extract all features of the dataset"""
     all_features = {'L': [], 'a': [], 'b': [], 'texture': []}
     all_labels = []
+    all_region_pixel_stats = []
     
     n_images = len(indices)
     print(f"\n[{desc}] Processing {n_images} images...")
@@ -204,13 +264,14 @@ def extract_dataset_features(
         image, mask = dataset[idx]
         
         try:
-            features, labels = extract_image_features(
+            features, labels, region_pixel_stats = extract_image_features(
                 image, mask, slic, region_gen, feat_extractor
             )
             
             for key in all_features:
                 all_features[key].append(features[key])
             all_labels.extend(labels)
+            all_region_pixel_stats.extend(region_pixel_stats)
             
         except Exception as e:
             print(f"  [Warning] Image {idx} failed: {e}")
@@ -221,13 +282,14 @@ def extract_dataset_features(
         all_features[key] = np.vstack(all_features[key]) if all_features[key] else np.array([])
     
     all_labels = np.array(all_labels)
+    all_region_pixel_stats = np.array(all_region_pixel_stats, dtype=np.int64)
     
     print(f"  Total regions: {len(all_labels)}")
     if len(all_labels) > 0:
         print(f"  Shadow: {np.sum(all_labels == 1)} ({np.mean(all_labels)*100:.1f}%)")
         print(f"  Non-shadow: {np.sum(all_labels == 0)} ({np.mean(all_labels == 0)*100:.1f}%)")
     
-    return all_features, all_labels
+    return all_features, all_labels, all_region_pixel_stats
 
 
 # =============================================================================
@@ -429,26 +491,31 @@ class MultiKernelLSSVM:
         return (decision_values > 0).astype(int)
 
 
-def evaluate(classifier, features: Dict[str, np.ndarray], labels: np.ndarray, name: str):
+def evaluate(
+    classifier,
+    features: Dict[str, np.ndarray],
+    labels: np.ndarray,
+    region_pixel_stats: np.ndarray,
+    name: str
+):
     """Evaluate classifier"""
     print(f"\n[{name}]")
     
     preds = classifier.predict(features)
     probs = classifier.predict_proba(features)
-    
-    ber = balanced_error_rate(labels, preds)
-    acc = np.mean(preds == labels)
-    
-    shadow_mask = labels == 1
-    non_shadow_mask = labels == 0
-    fpr = np.mean(preds[non_shadow_mask] == 1) if np.sum(non_shadow_mask) > 0 else 0
-    fnr = np.mean(preds[shadow_mask] == 0) if np.sum(shadow_mask) > 0 else 0
-    
-    print(f"  BER: {ber*100:.2f}%")
-    print(f"  Accuracy: {acc*100:.2f}%")
-    print(f"  FPR: {fpr*100:.2f}%, FNR: {fnr*100:.2f}%")
-    
-    return {'ber': ber, 'accuracy': acc, 'fpr': fpr, 'fnr': fnr}
+
+    # Keep this for compatibility/debugging, but report pixel-level metrics below.
+    _ = balanced_error_rate(labels, preds)
+    _ = probs
+
+    pixel_metrics = compute_pixel_metrics_from_regions(preds, region_pixel_stats)
+    print("  Pixel-level metrics:")
+    print(f"    BER: {pixel_metrics['ber']*100:.2f}%")
+    print(f"    Accuracy: {pixel_metrics['accuracy']*100:.2f}%")
+    print(f"    FPR: {pixel_metrics['fpr']*100:.2f}%")
+    print(f"    FNR: {pixel_metrics['fnr']*100:.2f}%")
+
+    return pixel_metrics
 
 
 # =============================================================================
@@ -529,12 +596,12 @@ def main():
     feat_extractor = PaperCompliantFeatureExtractor(texton_extractor=texton_extractor)
     
     # Extract training set features
-    train_features, train_labels = extract_dataset_features(
+    train_features, train_labels, train_region_stats = extract_dataset_features(
         dataset, train_indices, slic, region_gen, feat_extractor, "Training"
     )
     
     # Extract validation set features
-    val_features, val_labels = extract_dataset_features(
+    val_features, val_labels, val_region_stats = extract_dataset_features(
         dataset, val_indices, slic, region_gen, feat_extractor, "Validation"
     )
     
@@ -562,7 +629,13 @@ def main():
         classifier.fit(train_features, train_labels)
         
         if len(val_labels) > 0:
-            val_result = evaluate(classifier, val_features, val_labels, f"Val (mult={multiplier})")
+            val_result = evaluate(
+                classifier,
+                val_features,
+                val_labels,
+                val_region_stats,
+                f"Val (mult={multiplier})"
+            )
             if val_result['ber'] < best_ber:
                 best_ber = val_result['ber']
                 best_model = classifier
@@ -578,8 +651,20 @@ def main():
     print_section("5. Final Evaluation")
     timer.start("Evaluation")
     
-    train_result = evaluate(best_model, train_features, train_labels, "Final Train")
-    val_result = evaluate(best_model, val_features, val_labels, "Final Val") if len(val_labels) > 0 else None
+    train_result = evaluate(
+        best_model,
+        train_features,
+        train_labels,
+        train_region_stats,
+        "Final Train"
+    )
+    val_result = evaluate(
+        best_model,
+        val_features,
+        val_labels,
+        val_region_stats,
+        "Final Val"
+    ) if len(val_labels) > 0 else None
     
     timer.stop()
     

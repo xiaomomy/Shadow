@@ -755,7 +755,9 @@ class ShadowDetectionMultiKernel(BaseKernel):
         self, 
         X: np.ndarray = None, 
         Y: np.ndarray = None,
-        features_by_channel: Dict[str, np.ndarray] = None
+        features_by_channel: Dict[str, np.ndarray] = None,
+        use_tqdm: bool = False,
+        desc: str = "Combine kernels"
     ) -> np.ndarray:
         """
         Compute the combined kernel matrix.
@@ -768,6 +770,8 @@ class ShadowDetectionMultiKernel(BaseKernel):
             features_by_channel: Dict mapping channel name to histogram features
                 {'L': hist_L, 'a': hist_a, 'b': hist_b, 't': hist_t}
                 Each value is (n_samples, n_bins) array
+            use_tqdm: Whether to show a tqdm progress bar when combining kernels
+            desc: Description to display next to the progress bar
                 
         Returns:
             Combined kernel matrix (n_samples, n_samples)
@@ -783,8 +787,16 @@ class ShadowDetectionMultiKernel(BaseKernel):
         n_samples = features_by_channel['L'].shape[0]
         K_combined = np.zeros((n_samples, n_samples))
         
+        channels = list(self.FEATURE_NAMES)
+        iterator = channels
+        if use_tqdm:
+            try:
+                from tqdm import tqdm  # type: ignore
+                iterator = tqdm(channels, desc=desc, total=len(channels))
+            except ImportError:
+                iterator = channels
         # Compute each kernel and combine
-        for i, channel in enumerate(self.FEATURE_NAMES):
+        for i, channel in enumerate(iterator):
             X_channel = features_by_channel[channel]
             
             # Compute individual kernel
@@ -834,7 +846,9 @@ class ShadowDetectionMultiKernel(BaseKernel):
     def compute_cross(
         self,
         features_X: Dict[str, np.ndarray],
-        features_Y: Dict[str, np.ndarray]
+        features_Y: Dict[str, np.ndarray],
+        use_tqdm: bool = False,
+        desc: str = "Cross kernel"
     ) -> np.ndarray:
         """
         Compute kernel matrix between two different sets of features.
@@ -844,6 +858,8 @@ class ShadowDetectionMultiKernel(BaseKernel):
         Args:
             features_X: Features for first set {'L': ..., 'a': ..., 'b': ..., 't': ...}
             features_Y: Features for second set
+            use_tqdm: Whether to show a tqdm progress bar while computing
+            desc: Progress bar description
             
         Returns:
             Combined kernel matrix (n_X, n_Y)
@@ -859,8 +875,16 @@ class ShadowDetectionMultiKernel(BaseKernel):
         n_Y = features_Y['L'].shape[0]
         K_combined = np.zeros((n_X, n_Y))
         
+        channels = list(self.FEATURE_NAMES)
+        iterator = channels
+        if use_tqdm:
+            try:
+                from tqdm import tqdm  # type: ignore
+                iterator = tqdm(channels, desc=desc, total=len(channels))
+            except ImportError:
+                iterator = channels
         # Compute each kernel and combine
-        for i, channel in enumerate(self.FEATURE_NAMES):
+        for i, channel in enumerate(iterator):
             X_channel = features_X[channel]
             Y_channel = features_Y[channel]
             

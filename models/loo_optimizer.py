@@ -687,6 +687,12 @@ class PaperBeamSearchOptimizer:
             optimal_sigmas: Dict {channel: sigma}
             optimal_ber: Best leave-one-out balanced error rate
         """
+        try:
+            from tqdm import tqdm  # type: ignore
+            use_tqdm = True
+        except ImportError:
+            use_tqdm = False
+        
         self._log("Starting Beam Search Optimization (Paper Algorithm)")
         self._log(f"  Iterations: {self.n_iterations}, Stagnation threshold: {self.stagnation_threshold}")
         
@@ -725,8 +731,11 @@ class PaperBeamSearchOptimizer:
         
         # Step 3: Beam search with random steps
         stagnation_count = 0
+        iterator = range(self.n_iterations)
+        if use_tqdm and self.verbose:
+            iterator = tqdm(iterator, desc="BeamSearch", total=self.n_iterations)
         
-        for iteration in range(self.n_iterations):
+        for iteration in iterator:
             # Randomly choose one parameter to change
             param_type = np.random.choice(['weight', 'sigma'])
             channel = np.random.choice(self.CHANNELS)
@@ -778,6 +787,12 @@ class PaperBeamSearchOptimizer:
                 'ber': current_ber,
                 'best_ber': best_ber
             })
+            
+            if use_tqdm and self.verbose:
+                iterator.set_postfix({
+                    'best_ber': f"{best_ber:.4f}",
+                    'stagnation': stagnation_count
+                })
         
         # Store optimal results
         self.optimal_weights_ = best_params['weights']

@@ -22,4 +22,7 @@ data/**/*
 .DS_Store
 Thumbs.db
 
+# Output artifacts
+output/
+
 
