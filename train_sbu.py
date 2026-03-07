@@ -669,7 +669,7 @@ def main():
     
     start_opt = time.time()
     # Subsample regions for optimization to avoid O(N^2) memory blow-up
-    max_opt_samples = CONFIG.get('max_region_samples_opt', 12000)
+    max_opt_samples = CONFIG.get('max_region_samples_opt', 15000)
     if len(train_labels) > max_opt_samples:
         rng = np.random.default_rng(CONFIG['random_seed'])
         sample_indices = rng.choice(len(train_labels), size=max_opt_samples, replace=False)
