@@ -153,7 +153,7 @@ class PlattScaler:
             # Compute gradient
             # dL/da = Σ f_i (t_i - p_i)
             # dL/db = Σ (t_i - p_i)
-            diff = t - p
+            diff = p - t
             grad_a = np.dot(f, diff)
             grad_b = np.sum(diff)
             
