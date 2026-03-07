@@ -798,10 +798,6 @@ class TextonFeatureExtractor:
             self.texton_dict = TextonDictionary(n_textons=n_textons)
         
         self.filter_bank = self.texton_dict.filter_bank
-        
-        # Cache for filter responses
-        self._cached_responses = None
-        self._cached_image_id = None
     
     def build_dictionary(
         self,
@@ -829,7 +825,6 @@ class TextonFeatureExtractor:
         self,
         image: np.ndarray,
         region_labels: np.ndarray,
-        cache_responses: bool = True,
         use_gpu: bool = True
     ) -> np.ndarray:
         """
@@ -838,7 +833,6 @@ class TextonFeatureExtractor:
         Args:
             image: Input image (H, W) or (H, W, 3)
             region_labels: Region label map (H, W)
-            cache_responses: Whether to cache filter responses
             use_gpu: Whether to use GPU for calculation
             
         Returns:
@@ -852,14 +846,7 @@ class TextonFeatureExtractor:
         features = np.zeros((n_regions, self.n_textons))
         
         # Compute filter responses for the whole image
-        image_id = id(image)
-        if cache_responses and self._cached_image_id == image_id:
-            responses = self._cached_responses
-        else:
-            responses = self.filter_bank.apply(image, use_gpu=use_gpu)
-            if cache_responses:
-                self._cached_responses = responses
-                self._cached_image_id = image_id
+        responses = self.filter_bank.apply(image, use_gpu=use_gpu)
         
         # Assign textons for the whole image (more efficient on GPU)
         assignments = self.texton_dict.assign_textons(responses, use_gpu=use_gpu)
