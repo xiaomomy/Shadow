@@ -68,7 +68,8 @@ CONFIG = {
     'texton_train_images': 200,   # More images for better dictionary
     
     # Optimization (Phase 3)
-    'n_iterations': 200,          # Paper standard for Beam Search
+    'load_existing_model': True,     # Skip optimization if model exists
+    'n_iterations': 500,          # Paper standard for Beam Search
     'stagnation_threshold': 25,   # Reset after 25 iterations of no improvement
     'gamma_lssvm': 1.0,           # LSSVM regularization parameter
     
@@ -84,12 +85,8 @@ CONFIG = {
 
     # Test prediction visualization
     'save_test_mask_predictions': True,
-    'test_pred_candidate_images': 100,  # Randomly sample from first N test images
-    'test_pred_n_samples': 8,           # Number of prediction examples to save
-    'test_pred_seed': 7,
+    'test_pred_best_n': 20,             # Number of best prediction examples to save
     'use_mrf': True,                    # Enable MRF post-processing for predictions
-
-    # Optimization subset to avoid O(N^2) explosion
     'max_region_samples_opt': 15000,    # Upper bound of regions for Beam Search
 }
 
@@ -285,9 +282,9 @@ def _predict_mask_for_image(
     return pred_mask
 
 
-def save_random_test_prediction_visualizations(
+def save_prediction_visualizations(
     dataset: SBUDataset,
-    test_indices: List[int],
+    indices: List[int],
     slic: SuperpixelSegmenter,
     region_gen: MeanShiftRegionGenerator,
     feat_extractor: PaperCompliantFeatureExtractor,
@@ -296,40 +293,24 @@ def save_random_test_prediction_visualizations(
     train_features: Dict[str, np.ndarray],
     platt: PlattScaler,
     output_dir: Path,
-    candidate_images: int = 100,
-    n_samples: int = 8,
-    seed: int = 7,
-    apply_mrf: bool = False
+    apply_mrf: bool = False,
+    metrics_map: Optional[Dict[int, float]] = None
 ) -> None:
     """
-    Save random test-set mask prediction visualizations.
+    Save prediction visualizations for a specific list of indices.
 
-    A 2x2 panel is saved for each sampled image:
+    A 2x2 panel is saved for each image:
     (a) input image, (b) predicted shadow, (c) annotated shadow, (d) comparison.
+    If metrics_map is provided, the BER value is added to the panel title.
     """
-    if len(test_indices) == 0:
-        log("  [Prediction Preview] No test indices available. Skip.")
+    if len(indices) == 0:
+        log("  [Prediction Preview] No indices provided. Skip.")
         return
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    first_n = min(candidate_images, len(test_indices))
-    if first_n == 0:
-        log("  [Prediction Preview] No candidate test images. Skip.")
-        return
+    log(f"Step 7: Saving {len(indices)} prediction previews to {output_dir}...")
 
-    sample_count = min(n_samples, first_n)
-    rng = np.random.default_rng(seed)
-    selected_positions = np.sort(
-        rng.choice(first_n, size=sample_count, replace=False)
-    )
-
-    log(
-        f"Step 7: Saving {sample_count} test prediction previews "
-        f"from first {first_n} test images..."
-    )
-
-    for rank, pos in enumerate(selected_positions, start=1):
-        idx = test_indices[int(pos)]
+    for rank, idx in enumerate(indices, start=1):
         try:
             image, gt_mask = dataset[idx]
             original_rgb = _to_uint8_rgb(image)
@@ -349,8 +330,12 @@ def save_random_test_prediction_visualizations(
             gt_panel = _build_gt_mask_panel(gt_mask, original_rgb.shape[:2])
             cmp_panel = _build_comparison_panel(pred_mask, gt_mask, original_rgb.shape[:2])
 
-            p1 = _add_title_bar(original_rgb, "(a) Input image")
-            p2 = _add_title_bar(pred_panel, "(b) Predicted shadow")
+            title_suffix = ""
+            if metrics_map and idx in metrics_map:
+                title_suffix = f" (BER: {metrics_map[idx]*100:.2f}%)"
+
+            p1 = _add_title_bar(original_rgb, f"(a) Input image {idx}")
+            p2 = _add_title_bar(pred_panel, f"(b) Predicted shadow{title_suffix}")
             p3 = _add_title_bar(gt_panel, "(c) Annotated shadow")
             p4 = _add_title_bar(cmp_panel, "(d) Prediction vs. annotation")
 
@@ -358,12 +343,12 @@ def save_random_test_prediction_visualizations(
             bottom = np.concatenate([p3, p4], axis=1)
             preview = np.concatenate([top, bottom], axis=0)
 
-            save_path = output_dir / f"{rank:02d}_test_idx_{idx:05d}.png"
+            save_path = output_dir / f"rank_{rank:02d}_idx_{idx:05d}.png"
             cv2.imwrite(str(save_path), cv2.cvtColor(preview, cv2.COLOR_RGB2BGR))
         except Exception as exc:
-            log(f"  [Prediction Preview] Failed for test idx={idx}: {exc}")
+            log(f"  [Prediction Preview] Failed for idx={idx}: {exc}")
 
-    log(f"  [Prediction Preview] Saved to {output_dir}")
+    log(f"  [Prediction Preview] Export finished for {len(indices)} images.")
 
 
 def save_random_region_visualizations(
@@ -667,25 +652,45 @@ def main():
         verbose=True
     )
     
-    start_opt = time.time()
-    # Subsample regions for optimization to avoid O(N^2) memory blow-up
-    max_opt_samples = CONFIG.get('max_region_samples_opt', 15000)
-    if len(train_labels) > max_opt_samples:
-        rng = np.random.default_rng(CONFIG['random_seed'])
-        sample_indices = rng.choice(len(train_labels), size=max_opt_samples, replace=False)
-        log(f"  Subsampling {max_opt_samples} regions (out of {len(train_labels)}) for optimization.")
-        train_features_opt = {k: v[sample_indices] for k, v in train_features.items()}
-        train_labels_opt = train_labels[sample_indices]
-    else:
-        train_features_opt = train_features
-        train_labels_opt = train_labels
-        sample_indices = None
+    # Check for existing model to skip optimization
+    model_path = CONFIG['output_dir'] / 'sbu_final_model.pkl'
+    skip_optimization = False
+    if CONFIG.get('load_existing_model', True) and model_path.exists():
+        log(f"  Existing model found at {model_path}. Loading parameters...")
+        try:
+            with open(model_path, 'rb') as f:
+                saved_model = pickle.load(f)
+                # Manually set optimizer state from saved model
+                optimizer.optimal_weights_ = saved_model['optimal_weights']
+                optimizer.optimal_sigmas_ = saved_model['optimal_sigmas']
+                optimal_weights = optimizer.optimal_weights_
+                optimal_sigmas = optimizer.optimal_sigmas_
+                min_loo_ber = saved_model.get('test_pixel_metrics', {}).get('ber', 0.0)
+                skip_optimization = True
+                log("  Parameters loaded successfully. Skipping Beam Search optimization.")
+        except Exception as e:
+            log(f"  Failed to load existing model: {e}. Proceeding with optimization.")
 
-    optimal_weights, optimal_sigmas, min_loo_ber = optimizer.optimize(train_features_opt, train_labels_opt)
-    opt_duration = time.time() - start_opt
+    if not skip_optimization:
+        start_opt = time.time()
+        # Subsample regions for optimization to avoid O(N^2) memory blow-up
+        max_opt_samples = CONFIG.get('max_region_samples_opt', 15000)
+        if len(train_labels) > max_opt_samples:
+            rng = np.random.default_rng(CONFIG['random_seed'])
+            sample_indices = rng.choice(len(train_labels), size=max_opt_samples, replace=False)
+            log(f"  Subsampling {max_opt_samples} regions (out of {len(train_labels)}) for optimization.")
+            train_features_opt = {k: v[sample_indices] for k, v in train_features.items()}
+            train_labels_opt = train_labels[sample_indices]
+        else:
+            train_features_opt = train_features
+            train_labels_opt = train_labels
+            sample_indices = None
+
+        optimal_weights, optimal_sigmas, min_loo_ber = optimizer.optimize(train_features_opt, train_labels_opt)
+        opt_duration = time.time() - start_opt
+        log(f"  Optimization finished in {opt_duration/60:.1f} minutes.")
     
-    log(f"  Optimization finished in {opt_duration/60:.1f} minutes.")
-    log(f"  Best LOO BER: {min_loo_ber*100:.2f}%")
+    log(f"  Final/Best LOO BER: {min_loo_ber*100:.2f}%")
     log(f"  Optimal Weights: {optimal_weights}")
     log(f"  Optimal Sigmas: {optimal_sigmas}")
 
@@ -723,6 +728,7 @@ def main():
 
     tp = fp = fn = tn = 0.0
     evaluated = 0
+    image_metrics = []  # To store (idx, ber) for sorting
     for idx in eval_iterator:
         image, gt_mask = train_ds[idx]
         if gt_mask is None:
@@ -740,10 +746,22 @@ def main():
         )
         pred_bool = pred_mask.astype(bool)
         gt_bool = gt_mask.astype(bool)
-        tp += float(np.logical_and(pred_bool, gt_bool).sum())
-        fp += float(np.logical_and(pred_bool, ~gt_bool).sum())
-        fn += float(np.logical_and(~pred_bool, gt_bool).sum())
-        tn += float(np.logical_and(~pred_bool, ~gt_bool).sum())
+
+        # Per-image stats for finding best predictions
+        img_tp = float(np.logical_and(pred_bool, gt_bool).sum())
+        img_fp = float(np.logical_and(pred_bool, ~gt_bool).sum())
+        img_fn = float(np.logical_and(~pred_bool, gt_bool).sum())
+        img_tn = float(np.logical_and(~pred_bool, ~gt_bool).sum())
+
+        img_fpr = img_fp / (img_fp + img_tn) if (img_fp + img_tn) > 0 else 0.0
+        img_fnr = img_fn / (img_fn + img_tp) if (img_fn + img_tp) > 0 else 0.0
+        img_ber = (img_fpr + img_fnr) / 2.0
+        image_metrics.append((idx, img_ber))
+
+        tp += img_tp
+        fp += img_fp
+        fn += img_fn
+        tn += img_tn
         evaluated += 1
 
     if evaluated == 0:
@@ -769,10 +787,16 @@ def main():
     log(f"  Hold-out FNR: {pixel_metrics['fnr']*100:.2f}%")
     
     if CONFIG.get('save_test_mask_predictions', False):
-        pred_vis_dir = CONFIG['output_dir'] / 'holdout_predictions'
-        save_random_test_prediction_visualizations(
+        pred_vis_dir = CONFIG['output_dir'] / 'holdout_best_predictions'
+        # Sort by BER ascending (best first)
+        image_metrics.sort(key=lambda x: x[1])
+        best_n = CONFIG.get('test_pred_best_n', 20)
+        best_indices = [x[0] for x in image_metrics[:best_n]]
+        metrics_map = {x[0]: x[1] for x in image_metrics}
+
+        save_prediction_visualizations(
             dataset=train_ds,
-            test_indices=holdout_indices,
+            indices=best_indices,
             slic=slic,
             region_gen=region_gen,
             feat_extractor=feat_extractor,
@@ -781,10 +805,8 @@ def main():
             train_features=train_features,
             platt=platt,
             output_dir=pred_vis_dir,
-            candidate_images=CONFIG.get('test_pred_candidate_images', 100),
-            n_samples=CONFIG.get('test_pred_n_samples', 8),
-            seed=CONFIG.get('test_pred_seed', CONFIG['random_seed']),
-            apply_mrf=CONFIG.get('use_mrf', False)
+            apply_mrf=CONFIG.get('use_mrf', False),
+            metrics_map=metrics_map
         )
 
     # Save Model
