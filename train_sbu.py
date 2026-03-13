@@ -46,6 +46,8 @@ from models.mrf import (
     compute_region_adjacency,
     compute_region_areas
 )
+from baseline import build_baseline_kernel
+from baseline.cnn_baseline import run_cnn_region_baseline
 
 # =============================================================================
 # Configuration
@@ -68,6 +70,7 @@ CONFIG = {
     'texton_train_images': 200,   # More images for better dictionary
     
     # Optimization (Phase 3)
+    'method': 'lookop',              # ['lookop', 'unary_svm', 'mk_svm', 'cnn']
     'load_existing_model': True,     # Skip optimization if model exists
     'n_iterations': 500,          # Paper standard for Beam Search
     'stagnation_threshold': 25,   # Reset after 25 iterations of no improvement
@@ -88,6 +91,15 @@ CONFIG = {
     'test_pred_best_n': 20,             # Number of best prediction examples to save
     'use_mrf': True,                    # Enable MRF post-processing for predictions
     'max_region_samples_opt': 15000,    # Upper bound of regions for Beam Search
+    
+    # CNN baseline
+    'cnn_resize': 64,
+    'cnn_epochs': 3,
+    'cnn_batch_size': 4,
+    'cnn_lr': 1e-3,
+    'cnn_num_workers': 0,
+    'cnn_context_ratio': 0.1,      # Context padding around region bbox
+    'cnn_min_region_pixels': 20,   # Skip tiny regions
 }
 
 # GPU Setup
@@ -102,6 +114,65 @@ def log(message: str):
     """Timestamped logging"""
     timestamp = datetime.now().strftime("%H:%M:%S")
     print(f"[{timestamp}] {message}")
+
+def log_dataset_stats(labels: np.ndarray, n_images: int, desc: str):
+    """Log dataset region statistics"""
+    n_regions = len(labels)
+    log(f"  [{desc}] Total images: {n_images}")
+    log(f"  [{desc}] Total regions: {n_regions}")
+    if n_images > 0:
+        log(f"  [{desc}] Avg regions per image: {n_regions/n_images:.1f}")
+    if n_regions > 0:
+        log(f"  [{desc}] Shadow regions: {np.sum(labels==1)} ({np.mean(labels)*100:.1f}%)")
+
+def extract_region_patches(
+    dataset: SBUDataset,
+    indices: List[int],
+    slic: SuperpixelSegmenter,
+    region_gen: MeanShiftRegionGenerator,
+    context_ratio: float = 0.1,
+    min_pixels: int = 20,
+    desc: str = "Dataset"
+) -> Tuple[List[np.ndarray], List[int], List[List[int]]]:
+    """
+    Extract region patches (RGB) and labels for CNN baseline.
+    The region generation strictly matches the pipeline (SLIC + MeanShift).
+    """
+    patches: List[np.ndarray] = []
+    labels: List[int] = []
+    region_stats: List[List[int]] = []
+    for i, idx in enumerate(indices):
+        if (i + 1) % 50 == 0 or i == 0:
+            log(f"  [{desc}] Progress: {i+1}/{len(indices)} images processed...")
+        image, mask = dataset[idx]
+        sp_labels = slic.segment(image)
+        region_labels = region_gen.generate_regions(image, sp_labels)
+        n_regions = int(region_labels.max()) + 1
+        h, w = region_labels.shape
+        for r_id in range(n_regions):
+            r_mask = (region_labels == r_id)
+            pixel_count = int(np.sum(r_mask))
+            if pixel_count < min_pixels:
+                continue
+            ys, xs = np.nonzero(r_mask)
+            y0, y1 = ys.min(), ys.max()
+            x0, x1 = xs.min(), xs.max()
+            pad_y = int((y1 - y0 + 1) * context_ratio)
+            pad_x = int((x1 - x0 + 1) * context_ratio)
+            y0 = max(0, y0 - pad_y)
+            y1 = min(h - 1, y1 + pad_y)
+            x0 = max(0, x0 - pad_x)
+            x1 = min(w - 1, x1 + pad_x)
+            crop = image[y0:y1 + 1, x0:x1 + 1]
+            label = get_region_label(mask, r_mask)
+            patches.append(crop.astype(np.uint8))
+            labels.append(label)
+            if mask is not None:
+                n_shadow = int(np.sum(mask[r_mask] > 0))
+            else:
+                n_shadow = 0
+            region_stats.append([pixel_count, n_shadow])
+    return patches, labels, region_stats
 
 def get_region_label(mask: np.ndarray, region_mask: np.ndarray) -> int:
     """Determine region label based on majority pixel label"""
@@ -243,10 +314,11 @@ def _predict_mask_for_image(
     train_features: Dict[str, np.ndarray],
     platt: Optional[PlattScaler] = None,
     apply_mrf: bool = False
-) -> np.ndarray:
+) -> Tuple[np.ndarray, int]:
     """Predict a binary shadow mask for a single image using region inference."""
     sp_labels = slic.segment(image)
     region_labels = region_gen.generate_regions(image, sp_labels)
+    n_img_regions = int(region_labels.max()) + 1
     features = feat_extractor.extract_features_by_channel(
         image, region_labels, use_gpu=USE_GPU
     )
@@ -279,7 +351,7 @@ def _predict_mask_for_image(
     for region_id in range(len(region_preds)):
         if region_preds[region_id] > 0:
             pred_mask[region_labels == region_id] = 1
-    return pred_mask
+    return pred_mask, n_img_regions
 
 
 def save_prediction_visualizations(
@@ -314,7 +386,7 @@ def save_prediction_visualizations(
         try:
             image, gt_mask = dataset[idx]
             original_rgb = _to_uint8_rgb(image)
-            pred_mask = _predict_mask_for_image(
+            pred_mask, _ = _predict_mask_for_image(
                 image=image,
                 slic=slic,
                 region_gen=region_gen,
@@ -530,8 +602,8 @@ def process_dataset(
     all_labels = np.array(all_labels)
     all_region_pixel_stats = np.array(all_region_pixel_stats, dtype=np.int64)
     
-    log(f"  Extraction complete. Total regions: {len(all_labels)}")
-    log(f"  Shadow regions: {np.sum(all_labels==1)} ({np.mean(all_labels)*100:.1f}%)")
+    log(f"  Extraction complete for {desc}.")
+    log_dataset_stats(all_labels, len(indices), desc)
     
     return all_features, all_labels, all_region_pixel_stats
 
@@ -550,6 +622,8 @@ def main():
     # 1. Load Dataset
     log("Step 1: Loading SBU dataset...")
     train_ds = SBUDataset(split='train')
+    method = CONFIG.get('method', 'lookop')
+    log(f"  Selected method: {method}")
     
     # Sample selection
     rng = np.random.default_rng(CONFIG['random_seed'])
@@ -561,6 +635,44 @@ def main():
     
     log(f"  Training images: {len(train_indices)}")
     log(f"  Hold-out images: {len(holdout_indices)}")
+    
+    # Fast path for CNN region baseline (needs region patches)
+    if method == 'cnn':
+        log("Method is CNN baseline; extracting region patches.")
+        slic = SuperpixelSegmenter(n_segments=CONFIG['n_segments'], compactness=CONFIG['compactness'])
+        region_gen = MeanShiftRegionGenerator(bandwidth=CONFIG['region_bandwidth'])
+        train_patches, train_patch_labels, _ = extract_region_patches(
+            dataset=train_ds,
+            indices=train_indices,
+            slic=slic,
+            region_gen=region_gen,
+            context_ratio=CONFIG.get('cnn_context_ratio', 0.1),
+            min_pixels=CONFIG.get('cnn_min_region_pixels', 20),
+            desc="Train"
+        )
+        holdout_patches, holdout_patch_labels, holdout_region_stats = extract_region_patches(
+            dataset=train_ds,
+            indices=holdout_indices,
+            slic=slic,
+            region_gen=region_gen,
+            context_ratio=CONFIG.get('cnn_context_ratio', 0.1),
+            min_pixels=CONFIG.get('cnn_min_region_pixels', 20),
+            desc="Holdout"
+        )
+        log_dataset_stats(np.array(train_patch_labels), len(train_indices), "CNN Train")
+        log_dataset_stats(np.array(holdout_patch_labels), len(holdout_indices), "CNN Holdout")
+        run_cnn_region_baseline(
+            train_patches=train_patches,
+            train_labels=train_patch_labels,
+            holdout_patches=holdout_patches,
+            holdout_labels=holdout_patch_labels,
+            holdout_region_stats=holdout_region_stats,
+            config=CONFIG,
+            device=DEVICE,
+            log_fn=log
+        )
+        log("Pipeline finished successfully (CNN region baseline).")
+        return
     
     # 2. Build Texton Dictionary
     log("Step 2: Building Texton dictionary...")
@@ -615,6 +727,8 @@ def main():
             if cache_has_pixel_stats:
                 train_features, train_labels, train_region_stats = train_cached
                 holdout_features, holdout_labels, holdout_region_stats = holdout_cached
+                log_dataset_stats(train_labels, len(train_indices), "Train (Cached)")
+                log_dataset_stats(holdout_labels, len(holdout_indices), "Holdout (Cached)")
             else:
                 log("  Cache format is outdated (missing pixel stats). Re-extracting...")
                 train_features, train_labels, train_region_stats = process_dataset(
@@ -642,62 +756,98 @@ def main():
                 'holdout': (holdout_features, holdout_labels, holdout_region_stats)
             }, f)
 
-    # 4. Joint Kernel Optimization (Beam Search)
-    log("Step 4: Joint Kernel Optimization (Phase 3)...")
-    log("  Initializing Paper-compliant Beam Search Optimizer...")
-    optimizer = PaperBeamSearchOptimizer(
-        n_iterations=CONFIG['n_iterations'],
-        stagnation_threshold=CONFIG['stagnation_threshold'],
-        gamma_lssvm=CONFIG['gamma_lssvm'],
-        verbose=True
-    )
-    
-    # Check for existing model to skip optimization
-    model_path = CONFIG['output_dir'] / 'sbu_final_model.pkl'
-    skip_optimization = False
-    if CONFIG.get('load_existing_model', True) and model_path.exists():
-        log(f"  Existing model found at {model_path}. Loading parameters...")
-        try:
-            with open(model_path, 'rb') as f:
-                saved_model = pickle.load(f)
-                # Manually set optimizer state from saved model
-                optimizer.optimal_weights_ = saved_model['optimal_weights']
-                optimizer.optimal_sigmas_ = saved_model['optimal_sigmas']
-                optimal_weights = optimizer.optimal_weights_
-                optimal_sigmas = optimizer.optimal_sigmas_
-                min_loo_ber = saved_model.get('test_pixel_metrics', {}).get('ber', 0.0)
-                skip_optimization = True
-                log("  Parameters loaded successfully. Skipping Beam Search optimization.")
-        except Exception as e:
-            log(f"  Failed to load existing model: {e}. Proceeding with optimization.")
+    # 4. Model preparation (LooKOP or baselines)
+    log("Step 4: Model preparation...")
+    model_path = CONFIG['output_dir'] / f'sbu_model_{method}.pkl'
+    baseline_params = None
+    if method == 'lookop':
+        log("  Initializing Paper-compliant Beam Search Optimizer...")
+        optimizer = PaperBeamSearchOptimizer(
+            n_iterations=CONFIG['n_iterations'],
+            stagnation_threshold=CONFIG['stagnation_threshold'],
+            gamma_lssvm=CONFIG['gamma_lssvm'],
+            verbose=True
+        )
+        skip_optimization = False
+        if CONFIG.get('load_existing_model', True) and model_path.exists():
+            log(f"  Existing model found at {model_path}. Loading parameters...")
+            try:
+                with open(model_path, 'rb') as f:
+                    saved_model = pickle.load(f)
+                    if saved_model.get('method', 'lookop') == 'lookop':
+                        optimizer.optimal_weights_ = saved_model['optimal_weights']
+                        optimizer.optimal_sigmas_ = saved_model['optimal_sigmas']
+                        optimal_weights = optimizer.optimal_weights_
+                        optimal_sigmas = optimizer.optimal_sigmas_
+                        min_loo_ber = saved_model.get('test_pixel_metrics', {}).get('ber', 0.0)
+                        skip_optimization = True
+                        log("  Parameters loaded successfully. Skipping Beam Search optimization.")
+                    else:
+                        log("  Saved model method mismatch. Proceeding with optimization.")
+            except Exception as e:
+                log(f"  Failed to load existing model: {e}. Proceeding with optimization.")
 
-    if not skip_optimization:
-        start_opt = time.time()
-        # Subsample regions for optimization to avoid O(N^2) memory blow-up
-        max_opt_samples = CONFIG.get('max_region_samples_opt', 15000)
-        if len(train_labels) > max_opt_samples:
-            rng = np.random.default_rng(CONFIG['random_seed'])
-            sample_indices = rng.choice(len(train_labels), size=max_opt_samples, replace=False)
-            log(f"  Subsampling {max_opt_samples} regions (out of {len(train_labels)}) for optimization.")
-            train_features_opt = {k: v[sample_indices] for k, v in train_features.items()}
-            train_labels_opt = train_labels[sample_indices]
+        if not skip_optimization:
+            start_opt = time.time()
+            # Subsample regions for optimization to avoid O(N^2) memory blow-up
+            max_opt_samples = CONFIG.get('max_region_samples_opt', 15000)
+            if len(train_labels) > max_opt_samples:
+                rng = np.random.default_rng(CONFIG['random_seed'])
+                sample_indices = rng.choice(len(train_labels), size=max_opt_samples, replace=False)
+                log(f"  Subsampling {max_opt_samples} regions (out of {len(train_labels)}) for optimization.")
+                train_features_opt = {k: v[sample_indices] for k, v in train_features.items()}
+                train_labels_opt = train_labels[sample_indices]
+            else:
+                train_features_opt = train_features
+                train_labels_opt = train_labels
+                sample_indices = None
+
+            optimal_weights, optimal_sigmas, min_loo_ber = optimizer.optimize(train_features_opt, train_labels_opt)
+            opt_duration = time.time() - start_opt
+            log(f"  Optimization finished in {opt_duration/60:.1f} minutes.")
+        log(f"  Final/Best LOO BER: {min_loo_ber*100:.2f}%")
+        log(f"  Optimal Weights: {optimal_weights}")
+        log(f"  Optimal Sigmas: {optimal_sigmas}")
+        final_kernel = optimizer.get_optimized_kernel()
+    else:
+        log(f"  Building baseline kernel for method={method}...")
+        if CONFIG.get('load_existing_model', True) and model_path.exists():
+            try:
+                with open(model_path, 'rb') as f:
+                    saved_model = pickle.load(f)
+                    if saved_model.get('method', '') == method:
+                        baseline_params = saved_model.get('baseline_params', None)
+                        log("  Loaded baseline parameters from existing model.")
+                    else:
+                        log("  Saved model method mismatch. Rebuilding baseline parameters.")
+            except Exception as e:
+                log(f"  Failed to load baseline parameters: {e}. Rebuilding.")
+        if baseline_params is not None:
+            weights = baseline_params.get('weights')
+            sigmas = baseline_params.get('sigmas')
+            sigma_single = baseline_params.get('sigma_single')
+            if method == 'unary_svm' and sigma_single is not None:
+                CONFIG['unary_sigma'] = sigma_single
+            final_kernel, baseline_params = build_baseline_kernel(
+                method=method,
+                train_features=train_features,
+                config=CONFIG,
+                fixed_weights=weights,
+                fixed_sigmas=sigmas
+            )
         else:
-            train_features_opt = train_features
-            train_labels_opt = train_labels
-            sample_indices = None
-
-        optimal_weights, optimal_sigmas, min_loo_ber = optimizer.optimize(train_features_opt, train_labels_opt)
-        opt_duration = time.time() - start_opt
-        log(f"  Optimization finished in {opt_duration/60:.1f} minutes.")
-    
-    log(f"  Final/Best LOO BER: {min_loo_ber*100:.2f}%")
-    log(f"  Optimal Weights: {optimal_weights}")
-    log(f"  Optimal Sigmas: {optimal_sigmas}")
+            final_kernel, baseline_params = build_baseline_kernel(
+                method=method,
+                train_features=train_features,
+                config=CONFIG
+            )
+        optimal_weights = baseline_params.get('weights', {})
+        optimal_sigmas = baseline_params.get('sigmas', baseline_params.get('sigma_single', {}))
+        min_loo_ber = 0.0
+        log("  Baseline kernel prepared.")
 
     # 5. Final Model Training & Evaluation
-    log("Step 5: Training final LSSVM with optimal parameters...")
-    # Create final kernel and fit
-    final_kernel = optimizer.get_optimized_kernel()
+    log("Step 5: Training final LSSVM with selected parameters...")
     
     # Precompute kernel for training (efficient)
     log("  Computing final kernel matrix for training samples...")
@@ -728,12 +878,14 @@ def main():
 
     tp = fp = fn = tn = 0.0
     evaluated = 0
+    total_regions_processed = 0
     image_metrics = []  # To store (idx, ber) for sorting
     for idx in eval_iterator:
         image, gt_mask = train_ds[idx]
         if gt_mask is None:
             continue
-        pred_mask = _predict_mask_for_image(
+            
+        pred_mask, n_img_regions = _predict_mask_for_image(
             image=image,
             slic=slic,
             region_gen=region_gen,
@@ -744,6 +896,7 @@ def main():
             platt=platt,
             apply_mrf=CONFIG.get('use_mrf', False)
         )
+        total_regions_processed += n_img_regions
         pred_bool = pred_mask.astype(bool)
         gt_bool = gt_mask.astype(bool)
 
@@ -780,7 +933,11 @@ def main():
             'fnr': fnr
         }
 
-    log("=== Results Summary on Hold-out (Pixel-level) ===")
+    log(f"=== Results Summary on Hold-out (Pixel-level) ===")
+    log(f"  Images evaluated: {evaluated}")
+    log(f"  Total regions processed: {total_regions_processed}")
+    if evaluated > 0:
+        log(f"  Avg regions per image: {total_regions_processed/evaluated:.1f}")
     log(f"  Hold-out BER: {pixel_metrics['ber']*100:.2f}%")
     log(f"  Hold-out Accuracy: {pixel_metrics['accuracy']*100:.2f}%")
     log(f"  Hold-out FPR: {pixel_metrics['fpr']*100:.2f}%")
@@ -810,7 +967,7 @@ def main():
         )
 
     # Save Model
-    save_path = CONFIG['output_dir'] / 'sbu_final_model.pkl'
+    save_path = CONFIG['output_dir'] / f'sbu_model_{method}.pkl'
     log(f"Step 8: Saving model to {save_path}")
     with open(save_path, 'wb') as f:
         pickle.dump({
@@ -821,7 +978,9 @@ def main():
             'optimal_sigmas': optimal_sigmas,
             'train_features': train_features, # Needed for future cross-kernel prediction
             'config': CONFIG,
-            'test_pixel_metrics': pixel_metrics
+            'test_pixel_metrics': pixel_metrics,
+            'method': method,
+            'baseline_params': baseline_params
         }, f)
     
     log("Pipeline finished successfully.")

@@ -25,4 +25,8 @@ Thumbs.db
 # Output artifacts
 output/
 
+# Debug and Test scripts (not called by train_sbu.py)
+debug_*.py
+test_*.py
+
 

@@ -61,6 +61,16 @@ To reproduce the results of the ICCV 2015 paper on the full SBU dataset:
 python train_sbu.py
 ```
 
+### 📊 Performance Comparison
+Experimental results on the SBU hold-out set (200 images). Metrics are computed at the pixel level.
+
+| Method | Pixel FPR (%) | Pixel FNR (%) | Pixel BER (%) |
+| :--- | :---: | :---: | :---: |
+| Unary SVM | 2.78 | 49.10 | 25.94 |
+| MK-SVM | 2.59 | 53.54 | 28.07 |
+| ConvNet (CNN) | 4.15 | 43.05 | 23.60 |
+| **LooKOP (Ours)** | - | - | - |
+
 ### What happens during formal training?
 1. **Full Dataset**: The script uses the entire SBU-Shadow dataset (approx. 4,000 training and 638 test images).
 2. **Joint Optimization (Phase 3)**: It uses the `PaperBeamSearchOptimizer` to perform a 9-dimensional grid search (4 weights, 4 sigmas, 1 gamma) for 500 iterations.
