@@ -66,10 +66,10 @@ Experimental results on the SBU hold-out set (200 images). Metrics are computed 
 
 | Method | Pixel FPR (%) | Pixel FNR (%) | Pixel BER (%) |
 | :--- | :---: | :---: | :---: |
-| Unary SVM | 2.78 | 49.10 | 25.94 |
-| MK-SVM | 2.59 | 53.54 | 28.07 |
-| ConvNet (CNN) | 4.15 | 43.05 | 23.60 |
-| **LooKOP (Ours)** | 4.57 | 33.25 | 18.91 |
+| Unary SVM | 4.58 | 37.00 | 20.79 |
+| MK-SVM | 2.73 | 54.04 | 28.39 |
+| ConvNet (CNN) | 7.84 | 36.52 | 22.18 |
+| **LooKOP (Ours)** | 6.59 | 15.75 | 11.17 |
 
 ### What happens during formal training?
 1. **Full Dataset**: The script uses the entire SBU-Shadow dataset (approx. 4,000 training and 638 test images).

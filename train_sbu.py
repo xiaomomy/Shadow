@@ -56,12 +56,12 @@ from baseline.cnn_baseline import run_cnn_region_baseline
 CONFIG = {
     # Dataset
     'dataset_name': 'sbu',
-    'n_train_images': 400,        # Target ~12K regions (paper-scale)
-    'holdout_images': 200,        # Held-out images from train set for evaluation
+    'n_train_images': 120,        # Target ~12K regions (paper-scale)
+    'holdout_images': 60,        # Held-out images from train set for evaluation
     'random_seed': 42,
     
     # Superpixel & Region (Mean-shift)
-    'n_segments': 150,            # SLIC segments per image
+    'n_segments': 500,            # SLIC segments per image
     'compactness': 20,
     'region_bandwidth': 0.005,      # Bandwidth for Mean-shift region clustering
     
@@ -85,6 +85,10 @@ CONFIG = {
     'region_vis_candidate_images': 50,  # Randomly sample from first N images
     'region_vis_n_samples': 10,         # Number of images to save
     'region_vis_seed': 42,
+    'region_vis_specific_indices': [],  # Specific dataset indices to visualize
+    'region_vis_specific_paths': [
+        r"C:\\Users\\31946\\Desktop\\Work\\HKU_MSc\\CIML\\project\\shadow_try\\data\\sbu\\SBU-shadow\\SBUTrain4KRecoveredSmall\\ShadowImages\\issd1808.jpg"
+    ],    # Absolute paths to specific images to visualize
 
     # Test prediction visualization
     'save_test_mask_predictions': True,
@@ -94,7 +98,7 @@ CONFIG = {
     
     # CNN baseline
     'cnn_resize': 64,
-    'cnn_epochs': 3,
+    'cnn_epochs': 8,
     'cnn_batch_size': 4,
     'cnn_lr': 1e-3,
     'cnn_num_workers': 0,
@@ -431,38 +435,106 @@ def save_random_region_visualizations(
     output_dir: Path,
     candidate_images: int = 50,
     n_samples: int = 10,
-    seed: int = 42
+    seed: int = 42,
+    specific_indices: Optional[List[int]] = None,
+    specific_paths: Optional[List[str]] = None
 ) -> None:
     """
     Save random region-segmentation visualizations for qualitative inspection.
 
     The images are sampled from the first `candidate_images` entries in `indices`.
+    Supports specific dataset indices and absolute image paths.
     """
-    if len(indices) == 0:
-        log("  [Visualization] No indices available. Skip saving previews.")
-        return
-
     output_dir.mkdir(parents=True, exist_ok=True)
-    first_n = min(candidate_images, len(indices))
-    if first_n == 0:
-        log("  [Visualization] No candidate images. Skip saving previews.")
+    dataset_size = len(dataset)
+
+    # 1) Build list of tasks (image, mask, label_suffix)
+    tasks: List[Tuple[np.ndarray, Optional[np.ndarray], str]] = []
+
+    # A) Process specific absolute paths
+    if specific_paths:
+        for p_str in specific_paths:
+            p = Path(p_str)
+            if not p.exists():
+                log(f"  [Visualization] Skipping path (not found): {p_str}")
+                continue
+            
+            # Load image (BGR -> RGB)
+            img = cv2.imread(str(p))
+            if img is None:
+                log(f"  [Visualization] Skipping path (cannot load): {p_str}")
+                continue
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            
+            # Try to find mask in sibling ShadowMasks directory
+            mask = None
+            mask_dir = p.parent.parent / 'ShadowMasks'
+            if mask_dir.exists():
+                for ext in ['.png', '.jpg', '.jpeg']:
+                    m_p = mask_dir / (p.stem + ext)
+                    if m_p.exists():
+                        mask = cv2.imread(str(m_p), cv2.IMREAD_GRAYSCALE)
+                        if mask is not None:
+                            mask = (mask > 127).astype(np.uint8)
+                        break
+            
+            tasks.append((img, mask, f"path_{p.stem}"))
+
+    # B) Process specific dataset indices
+    selected_indices: List[int] = []
+
+    # 1) Always include user-specified indices that are within dataset range.
+    if specific_indices:
+        for idx in specific_indices:
+            if 0 <= idx < dataset_size:
+                selected_indices.append(idx)
+            else:
+                log(f"  [Visualization] Skipping specific idx={idx} (out of dataset range 0-{dataset_size-1}).")
+
+    # 2) Random choices from current training indices (first_n subset), avoiding duplicates.
+    first_n = min(candidate_images, len(indices)) if len(indices) > 0 else 0
+    if first_n > 0 and n_samples > 0:
+        sample_count = min(n_samples, first_n)
+        remaining_needed = max(0, sample_count - len(selected_indices))
+        if remaining_needed > 0:
+            rng = np.random.default_rng(seed)
+            candidate_subset = indices[:first_n]
+            candidate_subset = [i for i in candidate_subset if i not in selected_indices]
+            if len(candidate_subset) > 0:
+                random_choices = rng.choice(
+                    candidate_subset,
+                    size=min(remaining_needed, len(candidate_subset)),
+                    replace=False
+                )
+                selected_indices.extend(random_choices.tolist())
+
+    if len(selected_indices) == 0:
+        log("  [Visualization] No images selected for visualization. Skip.")
         return
 
-    sample_count = min(n_samples, first_n)
-    rng = np.random.default_rng(seed)
-    selected_positions = np.sort(
-        rng.choice(first_n, size=sample_count, replace=False)
-    )
+    # If only paths were provided, allow zero selected_indices.
+    if len(selected_indices) == 0 and len(tasks) == 0:
+        log("  [Visualization] No images selected for visualization. Skip.")
+        return
 
-    log(
-        f"  [Visualization] Saving {sample_count} previews "
-        f"from first {first_n} images to {output_dir}"
-    )
-
-    for rank, pos in enumerate(selected_positions, start=1):
-        idx = indices[int(pos)]
+    # Add dataset-based selections to tasks (load now to surface failures early).
+    for idx in selected_indices:
         try:
             image, mask = dataset[idx]
+            tasks.append((image, mask, f"idx_{idx:05d}"))
+        except Exception as exc:
+            log(f"  [Visualization] Failed to load dataset idx={idx}: {exc}")
+
+    total_tasks = len(tasks)
+    log(
+        f"  [Visualization] Saving {total_tasks} previews "
+        f"to {output_dir} (specific idx: {len(specific_indices or [])}, "
+        f"paths: {len(specific_paths or [])}, "
+        f"random: {len(selected_indices) - len(specific_indices or []) if specific_indices else len(selected_indices)})"
+    )
+
+    for rank, (image, mask, tag) in enumerate(tasks, start=1):
+        try:
             sp_labels = slic.segment(image)
             region_labels = region_gen.generate_regions(image, sp_labels)
 
@@ -470,7 +542,7 @@ def save_random_region_visualizations(
             superpixel_overlay = slic.visualize(original_rgb, color=(255, 0, 0))
             region_overlay = region_gen.visualize(original_rgb, color=(255, 0, 0))
 
-            region_colorized = _colorize_regions(region_labels, seed=seed + idx)
+            region_colorized = _colorize_regions(region_labels, seed=seed + rank)
             region_colorized = _overlay_shadow_mask(region_colorized, mask)
 
             preview = _build_segmentation_preview(
@@ -480,10 +552,10 @@ def save_random_region_visualizations(
                 region_colorized=region_colorized
             )
 
-            save_path = output_dir / f"{rank:02d}_dataset_idx_{idx:05d}.png"
+            save_path = output_dir / f"rank_{rank:02d}_{tag}.png"
             cv2.imwrite(str(save_path), cv2.cvtColor(preview, cv2.COLOR_RGB2BGR))
         except Exception as exc:
-            log(f"  [Visualization] Failed for image idx={idx}: {exc}")
+            log(f"  [Visualization] Failed for {tag}: {exc}")
 
     log("  [Visualization] Preview image export finished.")
 
@@ -705,11 +777,22 @@ def main():
             output_dir=vis_dir,
             candidate_images=CONFIG.get('region_vis_candidate_images', 50),
             n_samples=CONFIG.get('region_vis_n_samples', 10),
-            seed=CONFIG.get('region_vis_seed', CONFIG['random_seed'])
+            seed=CONFIG.get('region_vis_seed', CONFIG['random_seed']),
+            specific_indices=CONFIG.get('region_vis_specific_indices', []),
+            specific_paths=CONFIG.get('region_vis_specific_paths', [])
         )
     
     # Check cache for features
-    feat_cache = CONFIG['cache_dir'] / f"sbu_features_train{len(train_indices)}_holdout{len(holdout_indices)}.pkl"
+    # Cache filename must include segmentation hyperparameters; otherwise changing
+    # n_segments/compactness/bandwidth would keep reusing stale features.
+    seg = CONFIG.get('n_segments', 0)
+    compact = CONFIG.get('compactness', 0)
+    bandwidth = str(CONFIG.get('region_bandwidth', 0)).replace('.', 'p')
+    feat_cache = CONFIG['cache_dir'] / (
+        f"sbu_features_train{len(train_indices)}_"
+        f"holdout{len(holdout_indices)}_"
+        f"seg{seg}_compact{compact}_bw{bandwidth}.pkl"
+    )
     if feat_cache.exists():
         log(f"  Loading cached features from {feat_cache}")
         with open(feat_cache, 'rb') as f:
@@ -758,7 +841,19 @@ def main():
 
     # 4. Model preparation (LooKOP or baselines)
     log("Step 4: Model preparation...")
-    model_path = CONFIG['output_dir'] / f'sbu_model_{method}.pkl'
+    # Model path must include segmentation hyperparameters and data scale so that
+    # kernel parameters are re-optimized when n_segments/compactness/bandwidth or
+    # train/holdout sizes change. Reusing params from a different data scale would
+    # yield suboptimal results.
+    seg = CONFIG.get('n_segments', 0)
+    compact = CONFIG.get('compactness', 0)
+    bandwidth = str(CONFIG.get('region_bandwidth', 0)).replace('.', 'p')
+    n_train = len(train_indices)
+    n_holdout = len(holdout_indices)
+    model_path = CONFIG['output_dir'] / (
+        f"sbu_model_{method}_tr{n_train}_ho{n_holdout}_"
+        f"seg{seg}_compact{compact}_bw{bandwidth}.pkl"
+    )
     baseline_params = None
     if method == 'lookop':
         log("  Initializing Paper-compliant Beam Search Optimizer...")
@@ -966,8 +1061,8 @@ def main():
             metrics_map=metrics_map
         )
 
-    # Save Model
-    save_path = CONFIG['output_dir'] / f'sbu_model_{method}.pkl'
+    # Save Model (reuse model_path so filename matches load logic)
+    save_path = model_path
     log(f"Step 8: Saving model to {save_path}")
     with open(save_path, 'wb') as f:
         pickle.dump({
