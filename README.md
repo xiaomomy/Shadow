@@ -62,7 +62,7 @@ python train_sbu.py
 ```
 
 ### 📊 Performance Comparison
-Experimental results on the SBU hold-out set (200 images). Metrics are computed at the pixel level.
+Experimental results on the SBU hold-out set (60 images). Metrics are computed at the pixel level.
 
 | Method | Pixel FPR (%) | Pixel FNR (%) | Pixel BER (%) |
 | :--- | :---: | :---: | :---: |
@@ -72,11 +72,10 @@ Experimental results on the SBU hold-out set (200 images). Metrics are computed 
 | **LooKOP (Ours)** | 6.59 | 15.75 | 11.17 |
 
 ### What happens during formal training?
-1. **Full Dataset**: The script uses the entire SBU-Shadow dataset (approx. 4,000 training and 638 test images).
-2. **Joint Optimization (Phase 3)**: It uses the `PaperBeamSearchOptimizer` to perform a 9-dimensional grid search (4 weights, 4 sigmas, 1 gamma) for 500 iterations.
-3. **LOO Objective**: It minimizes the Leave-One-Out Balanced Error Rate (BER) using the closed-form residual formula.
-4. **Caching**: Feature extraction and Texton dictionary building are cached for performance.
-5. **Output**: The best model and detailed results are saved in `output/sbu_formal/`.
+1. **Joint Optimization (Phase 3)**: It uses the `PaperBeamSearchOptimizer` to perform a 9-dimensional grid search (4 weights, 4 sigmas, 1 gamma) for 500 iterations.
+2. **LOO Objective**: It minimizes the Leave-One-Out Balanced Error Rate (BER) using the closed-form residual formula.
+3. **Caching**: Feature extraction and Texton dictionary building are cached for performance.
+4. **Output**: The best model and detailed results are saved in `output/sbu_formal/`.
 
 ## 🧪 Mathematical Foundation
 
