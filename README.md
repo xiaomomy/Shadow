@@ -99,20 +99,25 @@ We report **pixel-level** false positive rate (FPR), false negative rate (FNR), 
 
 ### 3. Visual Gallery
 
-We present several qualitative results produced by LooKOP to intuitively
+We present several qualitative examples produced by LooKOP to intuitively
 dmonstrate its accuracy of shadow prediction.
 
-<p align="center">
+<div align="center">
+  <p><strong>Example 1</strong></p>
   <img src="figures/example1.png" alt="Example 1" width="600">
-</p>
-
-<p align="center">
+  <br><br>
+  
+  <hr width="50%" style="margin: 20px auto;">
+  
+  <p><strong>Example 2</strong></p>
   <img src="figures/example2.png" alt="Example 2" width="600">
-</p>
-
-<p align="center">
+  <br><br>
+  
+  <hr width="50%" style="margin: 20px auto;">
+  
+  <p><strong>Example 3</strong></p>
   <img src="figures/example3.png" alt="Example 3" width="600">
-</p>
+</div>
 
 
 ## 🙏 Acknowledgements
