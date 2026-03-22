@@ -106,6 +106,15 @@ dmonstrate its accuracy of shadow prediction.
   <img src="figures/example1.png" alt="Example 1" width="600">
 </p>
 
+<p align="center">
+  <img src="figures/example2.png" alt="Example 2" width="600">
+</p>
+
+<p align="center">
+  <img src="figures/example3.png" alt="Example 3" width="600">
+</p>
+
+
 ## 🙏 Acknowledgements
 Our repository builds entirely on the methodology and experimental spirit of Vicente et al. We are grateful to the authors for their clear formulation of leave-one-out kernel optimization for shadow detection and for the foundations it provides for reproducible research.
 
