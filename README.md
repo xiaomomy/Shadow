@@ -17,11 +17,11 @@ Finally, we optionally apply a **Markov Random Field (MRF)** stage that combines
 
 ## ⭐ Core Advantages
 
-- **Efficient LSSVM solver**: We solve for support values and bias via a linear system, avoiding iterative inner loops for the classifier itself.
-- **GPU acceleration**: Distance and kernel computations can leverage PyTorch CUDA for large region sets.
-- **Closed-form LOO error**: We evaluate leave-one-out residuals without retraining from scratch, enabling fast kernel selection during beam search.
-- **Dataset handling**: We integrate loading (and optional download) of the SBU-Shadow dataset for reproducible experiments.
-- **Full preprocessing stack**: SLIC, Mean-shift regions, paper-style LAB and texton features, Platt calibration, and MRF post-processing are wired into a single training script.
+- ⚡ **Efficient LSSVM solver**: We solve for support values and bias via a linear system, avoiding iterative inner loops for the classifier itself.
+- 🚀 **GPU acceleration**: Distance and kernel computations can leverage PyTorch CUDA for large region sets.
+- 📐 **Closed-form LOO error**: We evaluate leave-one-out residuals without retraining from scratch, enabling fast kernel selection during beam search.
+- 📥 **Dataset handling**: We integrate loading (and optional download) of the SBU-Shadow dataset for reproducible experiments.
+- 🔄 **Full preprocessing stack**: SLIC, Mean-shift regions, paper-style LAB and texton features, Platt calibration, and MRF post-processing are wired into a single training script.
 
 ## 📂 Repository Structure
 
