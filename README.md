@@ -1,39 +1,48 @@
 # Shadow Detection via Leave-One-Out Kernel Optimization
 
-This repository implements a shadow detection system based on the paper **"Leave-One-Out Kernel Optimization for Shadow Detection"** (Vicente et al., ICCV 2015). It leverages Kernel Least-Squares Support Vector Machines (LSSVM) with efficient Leave-One-Out (LOO) cross-validation for hyperparameter tuning and multi-kernel learning.
+## Repository Overview
 
-## 🚀 Key Features
+We present a faithful reproduction of the ICCV 2015 paper **“Leave-One-Out Kernel Optimization for Shadow Detection”** (Vicente et al.). Our implementation follows the paper’s pipeline—from region-based features to joint kernel learning and optional contextual refinement—and is developed as part of the **HKU MSc CIML** course project. Through this repository, we aim to make the original method accessible for study, comparison, and extension.
 
-- **Efficient LSSVM Solver**: Direct analytical solution for classifier parameters ($\alpha, b$) using linear system solvers.
-- **GPU Acceleration**: High-performance matrix operations and kernel computations using PyTorch CUDA backend.
-- **Closed-form LOO Error**: Compute Leave-One-Out cross-validation error in a single pass without retraining, enabling rapid model selection.
-- **Automatic Dataset Management**: Integrated logic to automatically download and extract the SBU-Shadow dataset.
-- **Regional Analysis**: Advanced preprocessing pipeline including SLIC superpixels, Mean-Shift region merging, and MR8-based Texton features.
+## Background: Why Shadow Detection Matters
 
-## 📂 Project Architecture
+Shadows are ubiquitous in outdoor and indoor imagery. Detecting them accurately supports higher-level vision tasks such as object recognition, scene understanding, and image editing. Yet shadows are challenging: they alter appearance without a simple intensity cue, interact with illumination and surface materials, and often blend gradually with lit regions. Region-based approaches that combine color, texture, and context remain a principled way to address these ambiguities.
+
+## Methodology at a Glance
+
+We adopt a **region-centric** design. First, we **oversegment** each image with SLIC superpixels, then **merge** superpixels into larger regions via Mean-shift clustering in LAB space, as in the paper. Each region is described by **CIELAB histograms** and **MR8 texton** statistics, enabling multi-channel kernel comparisons.
+
+**Leave-One-Out Kernel Optimization (LooKOP)** is the core of our system. We use a **Least-Squares SVM (LSSVM)** with a **multi-kernel** structure over the L\*, a\*, b\*, and texton channels. Instead of hand-tuning kernel weights and bandwidths, we **jointly optimize** them by minimizing a **closed-form Leave-One-Out balanced error** under a beam-search schedule—so hyperparameters are chosen to generalize well on the training regions.
+
+Finally, we optionally apply a **Markov Random Field (MRF)** stage that combines unary potentials from calibrated region scores with **pairwise affinities** derived from kernel similarity, refining predictions with **QPBO**-style energy minimization. Together, segmentation, LooKOP, and MRF form the end-to-end story we reproduce.
+
+## Core Advantages of This Implementation
+
+- **Efficient LSSVM solver**: We solve for support values and bias via a linear system, avoiding iterative inner loops for the classifier itself.
+- **GPU acceleration**: Distance and kernel computations can leverage PyTorch CUDA for large region sets.
+- **Closed-form LOO error**: We evaluate leave-one-out residuals without retraining from scratch, enabling fast kernel selection during beam search.
+- **Dataset handling**: We integrate loading (and optional download) of the SBU-Shadow dataset for reproducible experiments.
+- **Full preprocessing stack**: SLIC, Mean-shift regions, paper-style LAB and texton features, Platt calibration, and MRF post-processing are wired into a single training script.
+
+## Repository Structure
 
 ```text
 .
-├── data/                   # Data management module
-│   ├── dataset_loader.py   # SBU dataset loader with auto-download logic
-│   └── sbu/                # Local storage for SBU-Shadow dataset (ignored by git)
-├── models/                 # Machine learning models
-│   ├── lssvm.py            # Core LSSVM implementation (GPU-accelerated)
-│   ├── kernels.py          # RBF and Multi-Kernel definitions
-│   ├── distances.py        # EMD and Chi-Square distance metrics
-│   └── platt_scaling.py    # Probability calibration
-├── preprocessing/          # Image processing pipeline
-│   ├── superpixel.py       # SLIC superpixel segmentation
-│   ├── region.py           # Mean-Shift region generation
-│   ├── features.py         # LAB color and texture feature extraction
-│   └── texton.py           # MR8 filter bank and GPU K-Means dictionary
-├── output/                 # Training results and visualizations
-├── train_quick.py          # Entry point for quick validation
-├── train_sbu.py            # Entry point for formal SBU training (Full Paper Reproduction)
-└── requirements.txt        # Project dependencies
+├── baseline/               # Baseline methods (Unary/MK-SVM kernels, region CNN)
+├── data/                   # Dataset loader; local SBU data under data/sbu/ (git-ignored)
+├── models/                 # LSSVM, multi-kernel, LOO beam search, distances, Platt, MRF
+├── preprocessing/          # SLIC, Mean-shift regions, features, MR8 textons
+├── utils/                  # Shared utilities
+├── output/                 # Training outputs and visualizations (git-ignored by default)
+├── train_sbu.py            # Main entry: SBU training, evaluation, and optional baselines
+├── config.py               # Auxiliary configuration (optional)
+├── requirements.txt
+└── README.md
 ```
 
-## 🛠️ Installation
+## Reproduction Guide
+
+### 1. Installation
 
 1. **Clone the repository**:
    ```bash
@@ -41,28 +50,29 @@ This repository implements a shadow detection system based on the paper **"Leave
    cd Shadow
    ```
 
-2. **Install dependencies**:
-   Ensure you have Python 3.8+ and CUDA (optional but recommended) installed.
+2. **Install dependencies** (Python 3.8+; CUDA optional but recommended for speed):
    ```bash
    pip install -r requirements.txt
    ```
 
-## 🏃 Getting Started
+### 2. Running the Full Pipeline
 
-### 1. Quick Validation
-To start the quick training pipeline (using fewer images for rapid validation):
-```bash
-python train_quick.py
-```
+We consolidate the formal experiment in **`train_sbu.py`**. After placing or downloading the SBU-Shadow data under the expected paths (see `data/dataset_loader.py`), run:
 
-### 2. Formal SBU Training (Full Reproduction)
-To reproduce the results of the ICCV 2015 paper on the full SBU dataset:
 ```bash
 python train_sbu.py
 ```
 
+<<<<<<< HEAD
 ### 📊 Performance Comparison
 Experimental results on the SBU hold-out set (60 images). Metrics are computed at the pixel level.
+=======
+Hyperparameters such as the number of training images, hold-out size, SLIC superpixel count, Mean-shift bandwidth, optimization iterations, and the choice of method (`lookop`, `unary_svm`, `mk_svm`, `cnn`) are set in the **`CONFIG`** dictionary at the top of `train_sbu.py`. We cache heavy artifacts (e.g., texton dictionary and region features) under `output/cache/` and write models and visualizations under `output/sbu_formal/` by default. Adjust paths in `CONFIG` if your layout differs.
+
+## Reproduction Results
+
+We report **pixel-level** false positive rate (FPR), false negative rate (FNR), and balanced error rate (BER) on our SBU hold-out evaluation. Metrics are computed by expanding region predictions to pixels against ground-truth masks.
+>>>>>>> 88e4bd6 (feat: refine README.md)
 
 | Method | Pixel FPR (%) | Pixel FNR (%) | Pixel BER (%) |
 | :--- | :---: | :---: | :---: |
@@ -71,24 +81,19 @@ Experimental results on the SBU hold-out set (60 images). Metrics are computed a
 | ConvNet (CNN) | 7.84 | 36.52 | 22.18 |
 | **LooKOP (Ours)** | 6.59 | 15.75 | 11.17 |
 
+<<<<<<< HEAD
 ### What happens during formal training?
 1. **Joint Optimization (Phase 3)**: It uses the `PaperBeamSearchOptimizer` to perform a 9-dimensional grid search (4 weights, 4 sigmas, 1 gamma) for 500 iterations.
 2. **LOO Objective**: It minimizes the Leave-One-Out Balanced Error Rate (BER) using the closed-form residual formula.
 3. **Caching**: Feature extraction and Texton dictionary building are cached for performance.
 4. **Output**: The best model and detailed results are saved in `output/sbu_formal/`.
+=======
+## Citation and Acknowledgments
+>>>>>>> 88e4bd6 (feat: refine README.md)
 
-## 🧪 Mathematical Foundation
+This project builds directly on the methodology and experimental spirit of Vicente et al. We are grateful to the authors for their clear formulation of leave-one-out kernel optimization for shadow detection and for the foundations it provides for reproducible research.
 
-The model solves the following linear system to find the support values $\boldsymbol{\alpha}$ and bias $b$:
-
-$$\begin{bmatrix} 0 & \mathbf{1}^T \\ \mathbf{1} & \mathbf{K} + \gamma^{-1}\mathbf{I} \end{bmatrix} \begin{bmatrix} b \\ \boldsymbol{\alpha} \end{bmatrix} = \begin{bmatrix} 0 \\ \mathbf{y} \end{bmatrix}$$
-
-The **Leave-One-Out residual** for sample $i$ is computed efficiently as:
-$$e_i^{LOO} = \frac{\alpha_i}{(\mathbf{M}^{-1})_{i+1, i+1}}$$
-
-## 📜 Citation
-
-If you find this work useful for your research, please cite the original paper:
+If you use ideas or code derived from this reproduction, please cite the original paper:
 
 ```bibtex
 @inproceedings{vicente2015leave,
@@ -101,4 +106,4 @@ If you find this work useful for your research, please cite the original paper:
 ```
 
 ---
-*This project is for educational purposes as part of a course project at HKU (MSc CIML).*
+*Course project, HKU MSc CIML.*
