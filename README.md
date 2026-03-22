@@ -10,9 +10,8 @@
   <img src="figures/region_segmentation.png" alt="Region Segmentation Example" width="600">
 </p>
 
-We present a faithful reproduction of the ICCV 2015 paper **“Leave-One-Out Kernel Optimization for Shadow Detection”** (Vicente et al.) in this 
-repository. 
-Our implementation follows the paper’s pipeline—from region-based features to joint kernel learning and optional contextual refinement—and is developed as part of the **HKU MSc COMP7404** course project. Through this repository, we aim to make the original method accessible for reproduction and extension.
+In this repository, we present a faithful reproduction of the ICCV 2015 paper **“Leave-One-Out Kernel Optimization for Shadow Detection”** (Vicente et al.). 
+Our implementation follows the paper’s pipeline—from region-based features to joint kernel learning and optional contextual refinement—and is developed as the work for the **HKU MSc COMP7404** course project. Through this repository, we aim to make the original method accessible for reproduction and extension.
 
 ## 🌑 Background: Why Shadow Detection Matters
 
