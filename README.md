@@ -1,4 +1,4 @@
-# Leave-One-Out Kernel Optimization for Shadow Detection
+<h1 align="center">Leave-One-Out Kernel Optimization for Shadow Detection</h1>
 
 <p align="center">
   <a href="https://openaccess.thecvf.com/content_iccv_2015/html/Vicente_Leave-One-Out_Kernel_Optimization_ICCV_2015_paper.html">
