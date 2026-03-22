@@ -62,15 +62,13 @@ We consolidate the formal experiment in **`train_sbu.py`**. After placing or dow
 python train_sbu.py
 ```
 
-### 📊 Performance Comparison
+## 📊 Performance Comparison
 Experimental results on the SBU hold-out set (60 images). Metrics are computed at the pixel level.
-=======
 Hyperparameters such as the number of training images, hold-out size, SLIC superpixel count, Mean-shift bandwidth, optimization iterations, and the choice of method (`lookop`, `unary_svm`, `mk_svm`, `cnn`) are set in the **`CONFIG`** dictionary at the top of `train_sbu.py`. We cache heavy artifacts (e.g., texton dictionary and region features) under `output/cache/` and write models and visualizations under `output/sbu_formal/` by default. Adjust paths in `CONFIG` if your layout differs.
 
-## Reproduction Results
+### Reproduction Results
 
 We report **pixel-level** false positive rate (FPR), false negative rate (FNR), and balanced error rate (BER) on our SBU hold-out evaluation. Metrics are computed by expanding region predictions to pixels against ground-truth masks.
->>>>>>> 88e4bd6 (feat: refine README.md)
 
 | Method | Pixel FPR (%) | Pixel FNR (%) | Pixel BER (%) |
 | :--- | :---: | :---: | :---: |
@@ -78,16 +76,6 @@ We report **pixel-level** false positive rate (FPR), false negative rate (FNR), 
 | MK-SVM | 2.73 | 54.04 | 28.39 |
 | ConvNet (CNN) | 7.84 | 36.52 | 22.18 |
 | **LooKOP (Ours)** | 6.59 | 15.75 | 11.17 |
-
-<<<<<<< HEAD
-### What happens during formal training?
-1. **Joint Optimization (Phase 3)**: It uses the `PaperBeamSearchOptimizer` to perform a 9-dimensional grid search (4 weights, 4 sigmas, 1 gamma) for 500 iterations.
-2. **LOO Objective**: It minimizes the Leave-One-Out Balanced Error Rate (BER) using the closed-form residual formula.
-3. **Caching**: Feature extraction and Texton dictionary building are cached for performance.
-4. **Output**: The best model and detailed results are saved in `output/sbu_formal/`.
-=======
-## Citation and Acknowledgments
->>>>>>> 88e4bd6 (feat: refine README.md)
 
 This project builds directly on the methodology and experimental spirit of Vicente et al. We are grateful to the authors for their clear formulation of leave-one-out kernel optimization for shadow detection and for the foundations it provides for reproducible research.
 
@@ -102,6 +90,3 @@ If you use ideas or code derived from this reproduction, please cite the origina
   year={2015}
 }
 ```
-
----
-*Course project, HKU MSc CIML.*
