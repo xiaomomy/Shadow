@@ -1,6 +1,14 @@
-# Shadow Detection via Leave-One-Out Kernel Optimization
+# Leave-One-Out Kernel Optimization for Shadow Detection
 
-We present a faithful reproduction of the ICCV 2015 paper **“Leave-One-Out Kernel Optimization for Shadow Detection”** (Vicente et al.). Our implementation follows the paper’s pipeline—from region-based features to joint kernel learning and optional contextual refinement—and is developed as part of the **HKU MSc COMP7404** course project. Through this repository, we aim to make the original method accessible for reproduction and extension.
+<div align="center">
+  <a href="https://openaccess.thecvf.com/content_iccv_2015/html/Vicente_Leave-One-Out_Kernel_Optimization_ICCV_2015_paper.html" title="View Paper on ICCV 2015 Open Access">
+    📄
+  </a>
+</div>
+
+We present a faithful reproduction of the ICCV 2015 paper **“Leave-One-Out Kernel Optimization for Shadow Detection”** (Vicente et al.) in this 
+repository. 
+Our implementation follows the paper’s pipeline—from region-based features to joint kernel learning and optional contextual refinement—and is developed as part of the **HKU MSc COMP7404** course project. Through this repository, we aim to make the original method accessible for reproduction and extension.
 
 ## 🌑 Background: Why Shadow Detection Matters
 
