@@ -6,6 +6,10 @@
   </a>
 </p>
 
+<p align="center">
+  <img src="figures/region_segmentation.png" alt="Region Segmentation Example" width="600">
+</p>
+
 We present a faithful reproduction of the ICCV 2015 paper **“Leave-One-Out Kernel Optimization for Shadow Detection”** (Vicente et al.) in this 
 repository. 
 Our implementation follows the paper’s pipeline—from region-based features to joint kernel learning and optional contextual refinement—and is developed as part of the **HKU MSc COMP7404** course project. Through this repository, we aim to make the original method accessible for reproduction and extension.
@@ -74,11 +78,11 @@ python train_sbu.py
 
 ## 📊 Reproduction Results
 
-### Reproduction Setup
+### 1. Reproduction Setup
 
 We conduct our main experiments on the SBU-Shadow dataset. We sample **60 training images** (yielding approximately 15,000 regions) to train LooKOP and the baseline methods, and we hold out **60 images** for pixel-level evaluation. We align key hyperparameters—such as SLIC superpixel count, Mean-shift bandwidth, and beam-search iterations—with the original paper’s settings via the **`CONFIG`** dictionary in `train_sbu.py`. To streamline reproduction, we automatically cache computationally expensive artifacts (e.g., the texton dictionary and extracted region features) to `output/cache/` and save trained models together with visualizations to `output/sbu_formal/` by default. You can adjust these paths directly in `CONFIG` to match your local setup.
 
-### Quantitative Results
+### 2. Quantitative Results
 
 We report **pixel-level** false positive rate (FPR), false negative rate (FNR), and balanced error rate (BER) on our SBU hold-out evaluation. Metrics are computed by expanding region predictions to pixels against ground-truth masks.
 
@@ -93,7 +97,7 @@ We report **pixel-level** false positive rate (FPR), false negative rate (FNR), 
 
 </div>
 
-### Visual Gallery
+### 3. Visual Gallery
 
 
 ## 🙏 Acknowledgements
