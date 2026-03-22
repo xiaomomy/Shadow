@@ -99,6 +99,12 @@ We report **pixel-level** false positive rate (FPR), false negative rate (FNR), 
 
 ### 3. Visual Gallery
 
+We present several qualitative results produced by LooKOP to intuitively
+dmonstrate its accuracy of shadow prediction.
+
+<p align="center">
+  <img src="figures/example1.png" alt="Example 1" width="600">
+</p>
 
 ## 🙏 Acknowledgements
 Our repository builds entirely on the methodology and experimental spirit of Vicente et al. We are grateful to the authors for their clear formulation of leave-one-out kernel optimization for shadow detection and for the foundations it provides for reproducible research.
