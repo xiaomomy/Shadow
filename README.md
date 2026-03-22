@@ -2,11 +2,11 @@
 
 We present a faithful reproduction of the ICCV 2015 paper **“Leave-One-Out Kernel Optimization for Shadow Detection”** (Vicente et al.). Our implementation follows the paper’s pipeline—from region-based features to joint kernel learning and optional contextual refinement—and is developed as part of the **HKU MSc COMP7404** course project. Through this repository, we aim to make the original method accessible for reproduction and extension.
 
-## Background: Why Shadow Detection Matters
+## 🌑 Background: Why Shadow Detection Matters
 
 Shadows are ubiquitous in outdoor and indoor imagery. Detecting them accurately supports higher-level vision tasks such as object recognition, scene understanding and image editing. Yet shadows are challenging: they alter appearance without a simple intensity cue, interact with illumination and surface materials, and often blend gradually with lit regions. Region-based approaches that combine color, texture and context remain a principled way to address these ambiguities.
 
-## Methodology: LooKOP
+## 🔬 Methodology: LooKOP
 
 We adopt a **region-centric** design. First, we **oversegment** each image with SLIC superpixels, then **merge** superpixels into larger regions via Mean-shift clustering in LAB space, as in the original paper. 
 Each region is described by **CIELAB histograms** and **MR8 texton** statistics, enabling multi-channel kernel comparisons.
@@ -15,7 +15,7 @@ Each region is described by **CIELAB histograms** and **MR8 texton** statistics,
 
 Finally, we optionally apply a **Markov Random Field (MRF)** stage that combines unary potentials from calibrated region scores with **pairwise affinities** derived from kernel similarity, refining predictions with **QPBO**-style energy minimization. Together, segmentation, LooKOP and MRF form the end-to-end story we reproduce.
 
-## Core Advantages
+## ⭐ Core Advantages
 
 - **Efficient LSSVM solver**: We solve for support values and bias via a linear system, avoiding iterative inner loops for the classifier itself.
 - **GPU acceleration**: Distance and kernel computations can leverage PyTorch CUDA for large region sets.
@@ -23,7 +23,7 @@ Finally, we optionally apply a **Markov Random Field (MRF)** stage that combines
 - **Dataset handling**: We integrate loading (and optional download) of the SBU-Shadow dataset for reproducible experiments.
 - **Full preprocessing stack**: SLIC, Mean-shift regions, paper-style LAB and texton features, Platt calibration, and MRF post-processing are wired into a single training script.
 
-## Repository Structure
+## 📂 Repository Structure
 
 ```text
 .
@@ -39,7 +39,7 @@ Finally, we optionally apply a **Markov Random Field (MRF)** stage that combines
 └── README.md
 ```
 
-## Reproduction Guide
+## 🛠️ Reproduction Guide
 
 ### 1. Installation
 
@@ -81,12 +81,12 @@ We report **pixel-level** false positive rate (FPR), false negative rate (FNR), 
 | Unary SVM | 4.58 | 37.00 | 20.79 |
 | MK-SVM | 2.73 | 54.04 | 28.39 |
 | ConvNet (CNN) | 7.84 | 36.52 | 22.18 |
-| **LooKOP (Ours)** | 6.59 | 15.75 | 11.17 |
+| **LooKOP (Ours)** | 6.59 | **15.75** | **11.17** |
 
 ### Visual Gallery
 
 
-## Acknowledgements
+## 🙏 Acknowledgements
 This repository builds entirely on the methodology and experimental spirit of Vicente et al. We are grateful to the authors for their clear formulation of leave-one-out kernel optimization for shadow detection and for the foundations it provides for reproducible research.
 
 If you use ideas or code derived from this reproduction, please cite the original paper:
