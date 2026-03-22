@@ -56,7 +56,9 @@ Finally, we optionally apply a **Markov Random Field (MRF)** stage that combines
 
 ### 2. Running the Full Pipeline
 
-We consolidate the formal experiment in **`train_sbu.py`**. After placing or downloading the SBU-Shadow data under the expected paths (see `data/dataset_loader.py`), run:
+We consolidate our formal experiment in **`train_sbu.py`**. 
+After placing or downloading the SBU-Shadow dataset under the 
+expected paths (see `data/dataset_loader.py`), run:
 
 ```bash
 python train_sbu.py
@@ -65,16 +67,14 @@ python train_sbu.py
 ## 📊 Reproduction Results
 
 ### Reproduction Setup
-We use 60 images (about 15,000 regions) as the training set for LookOP and other baseline appoaches, and 
-evaluate their performances on the SBU hold-out set (60 images). 
-All metrics are computed at the pixel level.
-Hyperparameters such as the number of training images, hold-out size, SLIC superpixel count, Mean-shift bandwidth, optimization iterations, and the choice of method (`lookop`, `unary_svm`, `mk_svm`, `cnn`) are set in the **`CONFIG`** dictionary at the top of `train_sbu.py`, most of which are consistent the original implementation in the original paper. 
-Additionally, we cache heavy artifacts (e.g., texton dictionary and region features) under `output/cache/` and write models and visualizations under `output/sbu_formal/` by default. 
-Adjust paths in `CONFIG` if your layout differs.
+
+We conduct our main experiments on the SBU-Shadow dataset. We sample **60 training images** (yielding approximately 15,000 regions) to train LooKOP and the baseline methods, and we hold out **60 images** for pixel-level evaluation. We align key hyperparameters—such as SLIC superpixel count, Mean-shift bandwidth, and beam-search iterations—with the original paper’s settings via the **`CONFIG`** dictionary in `train_sbu.py`. To streamline reproduction, we automatically cache computationally expensive artifacts (e.g., the texton dictionary and extracted region features) to `output/cache/` and save trained models together with visualizations to `output/sbu_formal/` by default. You can adjust these paths directly in `CONFIG` to match your local setup.
 
 ### Quantitative Results
 
 We report **pixel-level** false positive rate (FPR), false negative rate (FNR), and balanced error rate (BER) on our SBU hold-out evaluation. Metrics are computed by expanding region predictions to pixels against ground-truth masks.
+
+<div align="center">
 
 | Method | Pixel FPR (%) | Pixel FNR (%) | Pixel BER (%) |
 | :--- | :---: | :---: | :---: |
@@ -83,11 +83,13 @@ We report **pixel-level** false positive rate (FPR), false negative rate (FNR), 
 | ConvNet (CNN) | 7.84 | 36.52 | 22.18 |
 | **LooKOP (Ours)** | 6.59 | **15.75** | **11.17** |
 
+</div>
+
 ### Visual Gallery
 
 
 ## 🙏 Acknowledgements
-This repository builds entirely on the methodology and experimental spirit of Vicente et al. We are grateful to the authors for their clear formulation of leave-one-out kernel optimization for shadow detection and for the foundations it provides for reproducible research.
+Our repository builds entirely on the methodology and experimental spirit of Vicente et al. We are grateful to the authors for their clear formulation of leave-one-out kernel optimization for shadow detection and for the foundations it provides for reproducible research.
 
 If you use ideas or code derived from this reproduction, please cite the original paper:
 
