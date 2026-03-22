@@ -62,11 +62,17 @@ We consolidate the formal experiment in **`train_sbu.py`**. After placing or dow
 python train_sbu.py
 ```
 
-## 📊 Performance Comparison
-Experimental results on the SBU hold-out set (60 images). Metrics are computed at the pixel level.
-Hyperparameters such as the number of training images, hold-out size, SLIC superpixel count, Mean-shift bandwidth, optimization iterations, and the choice of method (`lookop`, `unary_svm`, `mk_svm`, `cnn`) are set in the **`CONFIG`** dictionary at the top of `train_sbu.py`. We cache heavy artifacts (e.g., texton dictionary and region features) under `output/cache/` and write models and visualizations under `output/sbu_formal/` by default. Adjust paths in `CONFIG` if your layout differs.
+## 📊 Reproduction Results
 
-### Reproduction Results
+### Reproduction Setup
+We use 60 images (about 15,000 regions) as the training set for LookOP and other baseline appoaches, and 
+evaluate their performances on the SBU hold-out set (60 images). 
+All metrics are computed at the pixel level.
+Hyperparameters such as the number of training images, hold-out size, SLIC superpixel count, Mean-shift bandwidth, optimization iterations, and the choice of method (`lookop`, `unary_svm`, `mk_svm`, `cnn`) are set in the **`CONFIG`** dictionary at the top of `train_sbu.py`, most of which are consistent the original implementation in the original paper. 
+Additionally, we cache heavy artifacts (e.g., texton dictionary and region features) under `output/cache/` and write models and visualizations under `output/sbu_formal/` by default. 
+Adjust paths in `CONFIG` if your layout differs.
+
+### Quantitative Results
 
 We report **pixel-level** false positive rate (FPR), false negative rate (FNR), and balanced error rate (BER) on our SBU hold-out evaluation. Metrics are computed by expanding region predictions to pixels against ground-truth masks.
 
@@ -77,7 +83,11 @@ We report **pixel-level** false positive rate (FPR), false negative rate (FNR), 
 | ConvNet (CNN) | 7.84 | 36.52 | 22.18 |
 | **LooKOP (Ours)** | 6.59 | 15.75 | 11.17 |
 
-This project builds directly on the methodology and experimental spirit of Vicente et al. We are grateful to the authors for their clear formulation of leave-one-out kernel optimization for shadow detection and for the foundations it provides for reproducible research.
+### Visual Gallery
+
+
+## Acknowledgements
+This repository builds entirely on the methodology and experimental spirit of Vicente et al. We are grateful to the authors for their clear formulation of leave-one-out kernel optimization for shadow detection and for the foundations it provides for reproducible research.
 
 If you use ideas or code derived from this reproduction, please cite the original paper:
 
