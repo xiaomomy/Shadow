@@ -1,10 +1,10 @@
 # Leave-One-Out Kernel Optimization for Shadow Detection
 
-<div align="center">
-  <a href="https://openaccess.thecvf.com/content_iccv_2015/html/Vicente_Leave-One-Out_Kernel_Optimization_ICCV_2015_paper.html" title="View Paper on ICCV 2015 Open Access">
-    📄
+<p align="center">
+  <a href="https://openaccess.thecvf.com/content_iccv_2015/html/Vicente_Leave-One-Out_Kernel_Optimization_ICCV_2015_paper.html">
+    <img src="https://img.shields.io/badge/Paper-ICCV%202015-blue?style=flat&logo=openaccess" alt="View Paper">
   </a>
-</div>
+</p>
 
 We present a faithful reproduction of the ICCV 2015 paper **“Leave-One-Out Kernel Optimization for Shadow Detection”** (Vicente et al.) in this 
 repository. 
